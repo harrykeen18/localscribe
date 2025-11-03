@@ -6,6 +6,8 @@ LocalScribe captures audio from meeting apps (Zoom, Google Meet, etc.), transcri
 
 This is release repo for code review of LocalScribe.
 
+**https://localscribe.app**
+
 LocalScribe v0.2.2-beta - Fully private, on device using Apple foundation models only.
 - https://github.com/harrykeen18/localscribe/tree/stable
 
