@@ -8,10 +8,24 @@ struct MainWindowView: View {
 
     @State private var selectedTranscriptionId: UUID?
     @State private var showSettings = false
+    @State private var showOllamaHint = false
+    @State private var hasCheckedOllamaSetup = false
     @State private var currentRecordingPlaceholderId: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
+            // Ollama setup hint banner
+            if showOllamaHint {
+                OllamaSetupHintView(onOpenSettings: {
+                    showOllamaHint = false
+                    selectedTranscriptionId = nil
+                    showSettings = true
+                }, onDismiss: {
+                    showOllamaHint = false
+                    UserDefaults.standard.set(true, forKey: "hasSeenOllamaHint")
+                })
+            }
+
             // Toolbar
             ToolbarView(
                 state: audioRecorder.state,
@@ -94,6 +108,9 @@ struct MainWindowView: View {
             handleStateChange(from: oldState, to: newState)
             handleStatusBarButton(for: newState)
         }
+        .onAppear {
+            checkOllamaSetup()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("OpenSettings"))) { _ in
             selectedTranscriptionId = nil
             showSettings = true
@@ -131,6 +148,32 @@ struct MainWindowView: View {
         case .stopped, .transcribing, .summarizing:
             // Gray processing indicator - processing
             statusBarController.updateState(.processing)
+        }
+    }
+
+    // MARK: - Ollama Setup Check
+
+    private func checkOllamaSetup() {
+        guard !hasCheckedOllamaSetup else { return }
+        hasCheckedOllamaSetup = true
+
+        // Check if user has seen the hint before
+        let hasSeenHint = UserDefaults.standard.bool(forKey: "hasSeenOllamaHint")
+
+        // Show hint if they haven't seen it and Ollama isn't configured
+        if !hasSeenHint {
+            // Test if Ollama is reachable (try local first)
+            Task {
+                do {
+                    try await OllamaLocalService.shared.testConnection()
+                    // Connection successful, don't show hint
+                } catch {
+                    // Connection failed, show hint to configure
+                    await MainActor.run {
+                        showOllamaHint = true
+                    }
+                }
+            }
         }
     }
 
@@ -336,6 +379,69 @@ struct MainWindowView: View {
         selectedTranscriptionId = finalTranscription.id
         currentRecordingPlaceholderId = nil
         showSettings = false
+    }
+}
+
+// MARK: - Ollama Setup Hint Banner
+
+struct OllamaSetupHintView: View {
+    let onOpenSettings: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Info icon
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 16))
+                .foregroundColor(.blue)
+
+            // Message
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Configure Ollama for AI Summaries")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.primary)
+
+                Text("Set up your Ollama connection to enable automatic transcription summaries")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            // Settings button
+            Button(action: onOpenSettings) {
+                HStack(spacing: 6) {
+                    Image(systemName: "gear")
+                        .font(.system(size: 12))
+                    Text("Open Settings")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.blue)
+                .foregroundColor(.white)
+                .cornerRadius(6)
+            }
+            .buttonStyle(.plain)
+
+            // Dismiss button
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.blue.opacity(0.1))
+        .overlay(
+            Rectangle()
+                .fill(Color.blue.opacity(0.3))
+                .frame(height: 1),
+            alignment: .bottom
+        )
     }
 }
 

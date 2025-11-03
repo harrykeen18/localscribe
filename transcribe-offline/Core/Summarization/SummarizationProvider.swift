@@ -33,26 +33,53 @@ protocol SummarizationProvider {
 // MARK: - Provider Type
 
 enum SummarizationProviderType: String, Codable, CaseIterable {
+    case ollamaLocal = "ollamaLocal"
     case foundationModels = "foundationModels"
+    case ollamaRemote = "ollamaRemote"
 
     var displayName: String {
-        return "Apple Intelligence"
+        switch self {
+        case .foundationModels:
+            return "Apple Intelligence"
+        case .ollamaLocal:
+            return "Ollama (Local/LAN)"
+        case .ollamaRemote:
+            return "Ollama (Remote/Custom)"
+        }
     }
 
     var requiresAPIKey: Bool {
-        return false
+        switch self {
+        case .foundationModels, .ollamaLocal, .ollamaRemote:
+            return false
+        }
     }
 
     var isLocal: Bool {
-        return true
+        switch self {
+        case .foundationModels, .ollamaLocal:
+            return true
+        case .ollamaRemote:
+            return false  // May connect to remote servers
+        }
     }
 
     var securityLevel: SecurityLevel {
-        return .secure
+        switch self {
+        case .foundationModels, .ollamaLocal:
+            return .secure
+        case .ollamaRemote:
+            return .requiresUserConsent
+        }
     }
 
     var securityWarning: String? {
-        return nil
+        switch self {
+        case .foundationModels, .ollamaLocal:
+            return nil
+        case .ollamaRemote:
+            return "⚠️ This option allows unencrypted HTTP connections to any server. Only use with trusted networks like Tailscale, VPN, or configure your Ollama server with HTTPS."
+        }
     }
 }
 

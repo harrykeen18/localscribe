@@ -1,98 +1,120 @@
-# LocalScribe
+# LocalScribe (Experimental)
 
-**Private, on-device meeting transcription for macOS with Apple Intelligence**
+**⚠️ EXPERIMENTAL RELEASE - Includes Ollama support with network features**
 
-LocalScribe captures audio from meeting apps (Zoom, Google Meet, etc.), transcribes it locally using Whisper.cpp, and generates structured summaries using Apple Intelligence. Everything happens on your device—no data is sent to external servers.
+LocalScribe captures audio from meeting apps (Zoom, Google Meet, etc.), transcribes locally with Whisper.cpp, and summarizes using Apple Intelligence OR Ollama (local/remote).
+
+**For maximum privacy, use the [stable branch](https://github.com/harrykeen18/localscribe/tree/stable) (Apple Intelligence only, zero network access).**
 
 ## Features
 
-- **System Audio + Microphone Capture** - Records both sides of your meetings via ScreenCaptureKit
-- **Local Transcription** - Whisper.cpp base.en model (bundled with app, no downloads needed)
-- **Apple Intelligence Summarization** - 3-pass hierarchical summarization with structured markdown output
-- **Encrypted Storage** - AES-256-GCM encryption for all transcripts, keys stored in macOS Keychain
-- **Zero Network Access** - No external API calls, no telemetry, no analytics
+- **System Audio + Microphone Capture** - Records both sides via ScreenCaptureKit
+- **Local Transcription** - Whisper.cpp base.en model (bundled, offline)
+- **Multiple Summarization Options**:
+  - ✅ **Apple Intelligence** (on-device, private)
+  - ⚠️ **Ollama Local/LAN** (localhost/192.168.x.x, private)
+  - ⚠️ **Ollama Remote** (network-based, NOT private)
+- **Encrypted Storage** - AES-256-GCM encryption, keys in macOS Keychain
+
+## Privacy Warning
+
+### Apple Intelligence Option (Recommended)
+- ✅ 100% on-device processing
+- ✅ Zero network access
+- ✅ Maximum privacy
+
+### Ollama Local/LAN Option
+- ⚠️ Sends transcript to localhost or private network (192.168.x.x, 10.x.x.x)
+- ✅ Private if used on your own machine or trusted local network
+- ⚠️ Requires Ollama installation
+
+### Ollama Remote Option (Advanced)
+- ❌ Sends transcript over network to configured server
+- ❌ NOT private unless using encrypted tunnel (Tailscale, VPN) or HTTPS
+- ⚠️ Plain HTTP over internet exposes your transcript
+- ⚠️ Only use with:
+  - Tailscale (100.x.x.x - encrypted tunnel)
+  - VPN connections
+  - HTTPS endpoints
+
+**Recommendation**: Use Apple Intelligence or Ollama Local on your own machine for privacy.
 
 ## Requirements
 
 - **macOS 15.1 (Sequoia)** or later
 - **Apple Silicon** (M1, M2, M3, M4, or newer)
-- **Apple Intelligence** downloaded and enabled in System Settings
+- **Apple Intelligence** (for Apple Intelligence option)
+- **Ollama** (for Ollama options) - [Install from ollama.com](https://ollama.com)
 - ~500MB disk space
 
 ## Installation
 
-1. Download `LocalScribe-v0.2.2-beta.zip` from [GitHub Releases](https://github.com/harrykeen18/localscribe/releases)
-2. **Verify checksum** (recommended):
+1. Download `LocalScribe-v0.2.2-experimental.zip` from [GitHub Releases](https://github.com/harrykeen18/localscribe/releases)
+2. **Verify checksum**:
    ```bash
-   shasum -a 256 -c LocalScribe-v0.2.2-beta.zip.sha256
-   # Should output: LocalScribe-v0.2.2-beta.zip: OK
+   shasum -a 256 -c LocalScribe-v0.2.2-experimental.zip.sha256
    ```
-3. Extract the .zip file
-4. Move `LocalScribe.app` to `/Applications`
-5. **First launch**: Right-click → Open (bypasses Gatekeeper for unsigned build)
-6. Grant **Microphone** and **Screen Recording** permissions when prompted
+3. Extract and move `LocalScribe.app` to `/Applications`
+4. **First launch**: Right-click → Open (unsigned build)
+5. Grant **Microphone** and **Screen Recording** permissions
+
+## Ollama Setup (Optional)
+
+If you want to use Ollama instead of Apple Intelligence:
+
+1. **Install Ollama**: Download from [ollama.com](https://ollama.com)
+2. **Pull a model**:
+   ```bash
+   ollama pull qwen2.5
+   # or: ollama pull llama3.2
+   ```
+3. **Configure in LocalScribe**:
+   - Open Settings → Summarization Provider
+   - Expand "Advanced Options"
+   - Choose "Ollama (Local/LAN)" for privacy
+   - Set Base URL (default: `http://localhost:11434`)
+   - Set Model (e.g., `qwen2.5`)
+   - Click "Test Connection"
 
 ## Usage
 
-1. Click the record button to start capturing
-2. Have your meeting (Zoom, Google Meet, etc.)
+1. Click record button
+2. Have your meeting
 3. Click stop when finished
-4. Wait for transcription and summarization (~30-60 seconds)
-5. View your structured summary and full transcript
+4. Wait for transcription and summarization
+5. View results
 
-## Privacy
+## Privacy & Security
 
-### Zero Data Collection
+### For Apple Intelligence Option
 
-LocalScribe collects **no data**. Nothing is sent to external servers.
+- ✅ **Zero data collection**: Nothing sent anywhere
+- ✅ **On-device processing**: Transcription and summarization local
+- ✅ **Encrypted storage**: AES-256-GCM
+- ✅ **No network code**: Search codebase—no URLSession for this option
 
-- ✅ **On-device transcription**: Whisper.cpp runs locally, no network access
-- ✅ **On-device summarization**: Apple Intelligence processes everything locally
-- ✅ **Encrypted storage**: AES-256-GCM with keys in macOS Keychain
-- ✅ **No network code**: Search the codebase—no URLSession, no API calls
-- ✅ **No telemetry**: Zero analytics, crash reports, or tracking
+### For Ollama Options
+
+- ⚠️ **Transcript sent to configured server**: Your meeting transcript leaves the app
+- ⚠️ **Network security depends on configuration**:
+  - Localhost: Private ✅
+  - Private network (192.168.x.x): Private on trusted network ✅
+  - Tailscale/VPN: Encrypted tunnel ✅
+  - Plain HTTP over internet: NOT PRIVATE ❌
+- ✅ **Encrypted storage**: Transcripts still encrypted at rest locally
+- ⚠️ **NSAllowsArbitraryLoads enabled**: Allows HTTP connections (required for local Ollama)
 
 ### Technical Verification
 
-Verify privacy claims yourself:
-
 ```bash
-# Check Info.plist (should NOT contain NSAllowsArbitraryLoads)
+# Check Info.plist (experimental has NSAllowsArbitraryLoads)
 grep "NSAllowsArbitraryLoads" LocalScribe.app/Contents/Info.plist
 
-# Monitor network (app should make ZERO requests)
+# Monitor network when using Apple Intelligence (should be zero)
 sudo nettop -p $(pgrep -x "LocalScribe")
 
-# Search source code for network calls
-grep -r "URLSession\|URLRequest" --include="*.swift"
+# Monitor network when using Ollama (will show connections to configured server)
 ```
-
-### What We Don't Collect
-
-- ❌ Meeting recordings
-- ❌ Transcripts or summaries
-- ❌ User behavior analytics
-- ❌ Crash reports (unless you manually export diagnostics)
-- ❌ Device identifiers or IP addresses
-
-### Data Storage
-
-Transcripts stored locally at:
-```
-~/Library/Application Support/com.yourcompany.transcribe-offline/transcriptions.json
-```
-
-- **Encrypted**: AES-256-GCM before writing to disk
-- **Keys**: Stored securely in macOS Keychain
-- **iCloud**: Only syncs if you enable iCloud Drive for app support folder (files remain encrypted)
-
-### Uninstalling
-
-1. Move app to Trash
-2. Delete transcripts: `rm -rf ~/Library/Application\ Support/com.yourcompany.transcribe-offline/`
-3. Delete Keychain entry: Open Keychain Access, search for "transcribe-offline", delete entry
-
-## Security
 
 ### Reporting Vulnerabilities
 
@@ -103,67 +125,21 @@ Email: **harrykeen18@gmail.com** with subject "Security: [Brief Description]"
 Include:
 - Detailed description and steps to reproduce
 - Potential impact
-- Your contact info for follow-up
-
-### What Qualifies as a Security Issue
-
-**In scope:**
-- Data leakage (transcripts, audio, encryption keys)
-- Unintended network requests
-- Encryption implementation flaws
-- Keychain access bypass
-- File system access outside app container
-
-**Out of scope:**
-- Physical access attacks (if attacker has your Mac password)
-- Social engineering
-- Non-security bugs or feature requests
-
-### Responsible Disclosure
-
-We request:
-- Reasonable time to fix before public disclosure (prefer 90-day window)
-- Good faith security research
-
-We promise:
-- Acknowledgment within 48 hours
-- Public credit (with your permission)
-- No legal action against good-faith researchers
+- Your contact info
 
 ### Security Measures
 
 - **Encryption**: AES-256-GCM for all transcripts
-- **Keychain**: Encryption keys protected by your login password/Touch ID
-- **No Network**: Info.plist blocks HTTP requests
-- **Input Validation**: File paths sanitized, user input validated
-- **Minimal Dependencies**: Only Whisper.cpp (no external SDKs)
+- **Keychain**: Keys protected by login password/Touch ID
+- **Input Validation**: File paths sanitized
+- **Sandboxing**: Relies on macOS App Sandbox
 
-### Known Limitations (Beta)
+### Known Limitations (Experimental)
 
-- ⚠️ **Unsigned build**: Not signed by Apple Developer ID (requires right-click → Open)
-- ⚠️ **Not notarized**: Not yet submitted to Apple for notarization
-- ⚠️ **No key recovery**: If encryption key is lost, transcripts cannot be decrypted
-
-These will be addressed in future releases.
-
-### Threat Model
-
-**LocalScribe protects against:**
-- ✅ Network interception (no data sent)
-- ✅ Disk forensics (encrypted at rest)
-- ✅ Cloud provider access (no cloud services)
-- ✅ App Store tracking (no telemetry)
-
-**LocalScribe does NOT protect against:**
-- ❌ Physical access with your Mac password (attacker can access Keychain)
-- ❌ Malware with root access
-- ❌ Memory dumps while app is running (transcripts unencrypted in RAM during use)
-
-**Recommended additional protections:**
-- Enable FileVault (full disk encryption)
-- Use a strong Mac password
-- Keep macOS updated
-- Review app permissions regularly (System Settings → Privacy & Security)
+- ⚠️ **Unsigned build**: Not signed by Apple Developer ID
+- ⚠️ **Not notarized**: Not submitted to Apple
+- ⚠️ **Network access enabled**: Required for Ollama, creates attack surface
+- ⚠️ **Ollama remote NOT private**: Transcript sent over network
 
 ## Building from Source
 
@@ -171,7 +147,7 @@ These will be addressed in future releases.
    ```bash
    git clone https://github.com/harrykeen18/localscribe.git
    cd localscribe
-   git checkout stable
+   git checkout experimental
    ```
 
 2. **Download Whisper model files**:
@@ -190,45 +166,23 @@ These will be addressed in future releases.
 
 ## Bug Reports
 
-This is beta software. Bugs are expected!
+This is experimental software. Report issues via [GitHub Issues](https://github.com/harrykeen18/localscribe/issues).
 
-### How to Report
-
-1. **Export Diagnostics**:
-   - Open Settings (gear icon)
-   - Scroll to "Diagnostics" section
-   - Click "Copy to Clipboard" or "Save to File"
-
-2. **Create GitHub Issue**:
-   - Open [GitHub Issues](https://github.com/harrykeen18/localscribe/issues)
-   - Describe the problem
-   - Paste diagnostics
-   - **Note**: Diagnostics contain NO transcript content—only logs and system info
-
-### What to Include
-
-- Steps to reproduce
-- Expected vs. actual behavior
-- Diagnostics export
-- macOS version and chip type
-
-## Known Issues
-
-- Very long recordings (>2 hours) may fail due to memory constraints
-- First summarization may be slow (~30-60s) as Apple Intelligence initializes
-- Apple Intelligence must be downloaded separately via System Settings
+**Export diagnostics**: Settings → Diagnostics → Copy to Clipboard
+(Diagnostics contain NO transcript content—only logs)
 
 ## Version
 
-**v0.2.2-beta** - Beta release (Apple Intelligence only)
+**v0.2.2-experimental** - Experimental release with Ollama support
 
-See [CHANGELOG](https://github.com/harrykeen18/localscribe/releases) for version history.
+**For maximum privacy, use the [stable release](https://github.com/harrykeen18/localscribe/releases/tag/v0.2.2-beta) instead.**
 
 ## Acknowledgments
 
-- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Local speech-to-text engine
-- Apple Intelligence (Foundation Models) - On-device summarization
+- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Local speech-to-text
+- Apple Intelligence - On-device summarization
+- [Ollama](https://ollama.com) - Local/remote LLM support
 
 ---
 
-**Made with privacy in mind.** All processing happens on your device.
+**Privacy note**: This experimental version includes network features. Use stable branch for zero network access.

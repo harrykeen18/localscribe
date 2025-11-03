@@ -138,19 +138,19 @@ class FoundationModelsSummarizer: SummarizationProvider {
                 // Check for safety guardrail triggers
                 if errorDescription.contains("Safety guardrails") || errorDescription.contains("unsafe") {
                     logger.warning("Foundation Models safety guardrails triggered - transcript may contain flagged content", category: .transcription)
-                    throw SummarizationError.responseError("Apple Intelligence safety filters blocked this content. If this error seems incorrect, try restarting your Mac.")
+                    throw SummarizationError.responseError("Apple Intelligence safety filters blocked this content. Try using Ollama instead for unrestricted summarization. If this error seems incorrect, try restarting your Mac.")
                 }
 
                 // Check for missing system assets (corrupted installation)
                 if errorDescription.contains("metadata.json") || errorDescription.contains("No such file") {
                     logger.error("Foundation Models system assets missing - Apple Intelligence may need reinstallation", category: .transcription)
-                    throw SummarizationError.responseError("Apple Intelligence system files are missing or corrupted. Try:\n1. Restart your Mac\n2. Check System Settings > Apple Intelligence")
+                    throw SummarizationError.responseError("Apple Intelligence system files are missing or corrupted. Try:\n1. Restart your Mac\n2. Check System Settings > Apple Intelligence\n3. Use Ollama as an alternative")
                 }
 
                 // Check for inference failures
                 if errorDescription.contains("InferenceError") || errorDescription.contains("inferenceFailed") {
                     logger.error("Foundation Models inference failed: \(errorDescription)", category: .transcription)
-                    throw SummarizationError.responseError("Apple Intelligence inference failed. The model may be unavailable. If this error seems incorrect, try restarting your Mac.")
+                    throw SummarizationError.responseError("Apple Intelligence inference failed. The model may be unavailable. Try using Ollama instead. If this error seems incorrect, try restarting your Mac.")
                 }
 
                 // Generic error

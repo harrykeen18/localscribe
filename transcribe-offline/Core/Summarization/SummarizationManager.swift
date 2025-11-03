@@ -27,26 +27,60 @@ class SummarizationManager: ObservableObject {
     // MARK: - Provider Registration
 
     private func registerProviders() {
-        // Register Apple Intelligence only (fully private, on-device)
+        // Register all available providers
         providers = [
-            FoundationModelsSummarizer()
+            FoundationModelsSummarizer(),
+            OllamaLocalService.shared,
+            OllamaRemoteService.shared
         ]
 
-        logger.info("Registered \(providers.count) summarization provider (Apple Intelligence only)", category: .transcription)
+        logger.info("Registered \(providers.count) summarization providers", category: .transcription)
     }
 
     // MARK: - Provider Selection
 
-    /// Get Apple Intelligence provider (only provider in this release)
+    /// Get the best available provider based on priority
+    /// Priority: 1) Local Ollama (secure), 2) Foundation Models (secure), 3) Remote Ollama (requires consent)
+    /// If a provider is manually selected, ONLY that provider is used (no fallback to auto-selection)
     func getBestProvider() async -> SummarizationProvider? {
-        // Only Foundation Models available in this release
+        // If user has manually selected a provider, ONLY use that provider
+        if let selectedType = selectedProviderType {
+            if let provider = getProviderByType(selectedType), await provider.isAvailable() {
+                logger.info("Using manually selected provider: \(provider.displayName)", category: .transcription)
+                return provider
+            } else {
+                // User explicitly selected this provider, but it's not available
+                // Do NOT fall back to auto-selection - respect user's choice
+                logger.warning("Manually selected provider '\(selectedType.displayName)' is not available", category: .transcription)
+                return nil
+            }
+        }
+
+        // Auto mode: Try providers in priority order with fallback
+        logger.info("Auto mode: trying providers in priority order", category: .transcription)
+
+        // Try Local Ollama first (secure, user-configured)
+        if let ollamaLocal = providers.first(where: { $0.providerName == "ollamaLocal" }),
+           await ollamaLocal.isAvailable() {
+            logger.info("Using Ollama (Local/LAN)", category: .transcription)
+            return ollamaLocal
+        }
+
+        // Try Foundation Models next (secure, private, local, free)
         if let foundationModels = providers.first(where: { $0.providerName == "foundationModels" }),
            await foundationModels.isAvailable() {
-            logger.info("Using Apple Intelligence (on-device, fully private)", category: .transcription)
+            logger.info("Using Foundation Models (Apple Intelligence)", category: .transcription)
             return foundationModels
         }
 
-        logger.warning("Apple Intelligence not available - check System Settings > Apple Intelligence", category: .transcription)
+        // Try Remote Ollama last (less secure, requires user consent)
+        if let ollamaRemote = providers.first(where: { $0.providerName == "ollamaRemote" }),
+           await ollamaRemote.isAvailable() {
+            logger.info("Using Ollama (Remote/Custom)", category: .transcription)
+            return ollamaRemote
+        }
+
+        logger.warning("No summarization providers available", category: .transcription)
         return nil
     }
 
