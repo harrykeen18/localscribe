@@ -79,7 +79,7 @@ grep -r "URLSession\|URLRequest" --include="*.swift"
 
 Transcripts stored locally at:
 ```
-~/Library/Application Support/com.yourcompany.transcribe-offline/transcriptions.json
+~/Library/Application Support/transcribe-offline/transcriptions.json
 ```
 
 - **Encrypted**: AES-256-GCM before writing to disk
@@ -89,7 +89,7 @@ Transcripts stored locally at:
 ### Uninstalling
 
 1. Move app to Trash
-2. Delete transcripts: `rm -rf ~/Library/Application\ Support/com.yourcompany.transcribe-offline/`
+2. Delete transcripts: `rm -rf ~/Library/Application\ Support/transcribe-offline/`
 3. Delete Keychain entry: Open Keychain Access, search for "transcribe-offline", delete entry
 
 ## Security
@@ -98,12 +98,13 @@ Transcripts stored locally at:
 
 **DO NOT open public issues for security vulnerabilities.**
 
-Email: **harrykeen18@gmail.com** with subject "Security: [Brief Description]"
+Please report security issues via GitHub Security Advisories:
+https://github.com/harrykeen18/localscribe/security/advisories/new
 
 Include:
 - Detailed description and steps to reproduce
 - Potential impact
-- Your contact info for follow-up
+- Suggested fix (if you have one)
 
 ### What Qualifies as a Security Issue
 
