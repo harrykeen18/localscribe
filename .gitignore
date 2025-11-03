@@ -1,0 +1,29 @@
+# Build artifacts
+build/
+*.app
+*.zip
+*.sha256
+*.dSYM
+*.xcarchive
+
+# Xcode
+.DS_Store
+xcuserdata/
+DerivedData/
+*.xcworkspacedata
+project.xcworkspace/
+
+# Planning/Internal docs
+Planning docs/
+Alpha release notes/
+To do.md
+RELEASE_CHECKLIST.md
+
+# Merged into README (branch-specific)
+PRIVACY.md
+SECURITY.md
+
+# Large model files (included in release .zip only)
+# Users building from source should download from releases
+Resources/base.en.bin
+Resources/whisper
