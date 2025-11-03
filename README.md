@@ -120,12 +120,13 @@ sudo nettop -p $(pgrep -x "LocalScribe")
 
 **DO NOT open public issues for security vulnerabilities.**
 
-Email: **harrykeen18@gmail.com** with subject "Security: [Brief Description]"
+Please report security issues via GitHub Security Advisories:
+https://github.com/harrykeen18/localscribe/security/advisories/new
 
 Include:
 - Detailed description and steps to reproduce
 - Potential impact
-- Your contact info
+- Suggested fix (if you have one)
 
 ### Security Measures
 
