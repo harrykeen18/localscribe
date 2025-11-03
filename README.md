@@ -8,8 +8,8 @@ This is release repo for code review of LocalScribe.
 
 **https://localscribe.app**
 
-LocalScribe v0.2.2-beta - Fully private, on device using Apple foundation models only.
+LocalScribe v0.2.2-beta - Fully private, on device using Apple foundation models for summarisation.
 - https://github.com/harrykeen18/localscribe/tree/stable
 
-LocalScribe v0.2.2-experimental - Connect self hosted Ollama models.
+LocalScribe v0.2.2-experimental - Connect self hosted Ollama models for summarisation.
 - https://github.com/harrykeen18/localscribe/tree/experimental
