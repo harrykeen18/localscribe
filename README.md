@@ -1,6 +1,6 @@
 # LocalScribe
 
-**Private, on-device meeting transcription for macOS
+**Private, on-device meeting transcription for macOS**
 
 LocalScribe captures audio from meeting apps (Zoom, Google Meet, etc.), transcribes it locally using Whisper.cpp, and generates structured summaries using Apple Intelligence. Everything happens on your device—no data is sent to external servers.
 
