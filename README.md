@@ -135,6 +135,27 @@ Include:
 - **Input Validation**: File paths sanitized
 - **Sandboxing**: Relies on macOS App Sandbox
 
+### Data Storage
+
+Transcripts stored locally at:
+```
+~/Library/Containers/transcribe-offline/Data/Library/Application Support/AudioNotes/history.json
+```
+
+- **Encrypted**: AES-256-GCM before writing to disk
+- **Keys**: Stored securely in macOS Keychain
+- **Sandboxed**: App runs in a security container for additional protection
+- **iCloud**: Not synced by default (container is local-only)
+
+### Uninstalling
+
+1. Move app to Trash
+2. Delete app container (includes all transcripts and settings):
+   ```bash
+   rm -rf ~/Library/Containers/transcribe-offline/
+   ```
+3. Delete Keychain entries: Open Keychain Access, search for "transcribe-offline", delete all entries
+
 ### Known Limitations (Experimental)
 
 - ⚠️ **Unsigned build**: Not signed by Apple Developer ID
