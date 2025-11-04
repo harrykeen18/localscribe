@@ -79,18 +79,22 @@ grep -r "URLSession\|URLRequest" --include="*.swift"
 
 Transcripts stored locally at:
 ```
-~/Library/Application Support/transcribe-offline/transcriptions.json
+~/Library/Containers/transcribe-offline/Data/Library/Application Support/AudioNotes/history.json
 ```
 
 - **Encrypted**: AES-256-GCM before writing to disk
 - **Keys**: Stored securely in macOS Keychain
-- **iCloud**: Only syncs if you enable iCloud Drive for app support folder (files remain encrypted)
+- **Sandboxed**: App runs in a security container for additional protection
+- **iCloud**: Not synced by default (container is local-only)
 
 ### Uninstalling
 
 1. Move app to Trash
-2. Delete transcripts: `rm -rf ~/Library/Application\ Support/transcribe-offline/`
-3. Delete Keychain entry: Open Keychain Access, search for "transcribe-offline", delete entry
+2. Delete app container (includes all transcripts and settings):
+   ```bash
+   rm -rf ~/Library/Containers/transcribe-offline/
+   ```
+3. Delete Keychain entries: Open Keychain Access, search for "transcribe-offline", delete all entries
 
 ## Security
 
