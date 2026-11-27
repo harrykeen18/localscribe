@@ -9,7 +9,8 @@ LocalScribe captures audio from meeting apps (Zoom, Google Meet, etc.), transcri
 ## Features
 
 - **System Audio + Microphone Capture** - Records both sides via ScreenCaptureKit
-- **Local Transcription** - Whisper.cpp base.en model (bundled, offline)
+- **Local Transcription** - Whisper.cpp large-v3-turbo multilingual model with automatic language detection (bundled, offline)
+- **Speaker Diarization** - On-device Sortformer model labels up to 4 speakers
 - **Multiple Summarization Options**:
   - ✅ **Apple Intelligence** (on-device, private)
   - ⚠️ **Ollama Local/LAN** (localhost/192.168.x.x, private)
@@ -41,22 +42,33 @@ LocalScribe captures audio from meeting apps (Zoom, Google Meet, etc.), transcri
 
 ## Requirements
 
-- **macOS 15.1 (Sequoia)** or later
+- **macOS 26 (Tahoe)** or later
 - **Apple Silicon** (M1, M2, M3, M4, or newer)
 - **Apple Intelligence** (for Apple Intelligence option)
 - **Ollama** (for Ollama options) - [Install from ollama.com](https://ollama.com)
-- ~500MB disk space
+- ~1GB disk space
 
 ## Installation
 
-1. Download `LocalScribe-v0.2.2-experimental.zip` from [GitHub Releases](https://github.com/harrykeen18/localscribe/releases)
+1. Download `LocalScribe-v0.3.0-experimental.zip` from [GitHub Releases](https://github.com/harrykeen18/localscribe/releases)
 2. **Verify checksum**:
    ```bash
-   shasum -a 256 -c LocalScribe-v0.2.2-experimental.zip.sha256
+   shasum -a 256 -c LocalScribe-v0.3.0-experimental.zip.sha256
    ```
 3. Extract and move `LocalScribe.app` to `/Applications`
-4. **First launch**: Right-click → Open (unsigned build)
+4. Open LocalScribe (signed with Developer ID and notarized by Apple)
 5. Grant **Microphone** and **Screen Recording** permissions
+
+### Updating from v0.2.x
+
+Replace the old `LocalScribe.app` in `/Applications` with the new one. Your transcripts are kept.
+
+Because this release is the first signed with a Developer ID certificate, macOS treats it as a new app once:
+
+- When asked whether LocalScribe can use its key in your Keychain, click **Always Allow**. This key decrypts your existing transcripts.
+- Grant **Microphone** and **Screen Recording** again. If recording still fails, remove the old LocalScribe entry under System Settings → Privacy & Security → Screen & System Audio Recording, then add it again.
+
+If the Keychain prompt is denied, no transcripts are lost: LocalScribe sets the unreadable history aside and restores it on the next launch where the key can be read.
 
 ## Ollama Setup (Optional)
 
@@ -154,12 +166,10 @@ Transcripts stored locally at:
    ```bash
    rm -rf ~/Library/Containers/transcribe-offline/
    ```
-3. Delete Keychain entries: Open Keychain Access, search for "transcribe-offline", delete all entries
+3. Delete Keychain entries: Open Keychain Access, search for "com.transcribe", delete all entries
 
 ### Known Limitations (Experimental)
 
-- ⚠️ **Unsigned build**: Not signed by Apple Developer ID
-- ⚠️ **Not notarized**: Not submitted to Apple
 - ⚠️ **Network access enabled**: Required for Ollama, creates attack surface
 - ⚠️ **Ollama remote NOT private**: Transcript sent over network
 
@@ -172,10 +182,10 @@ Transcripts stored locally at:
    git checkout experimental
    ```
 
-2. **Download Whisper model files**:
-   - Download from the [latest release](https://github.com/harrykeen18/localscribe/releases/latest)
-   - Extract `Resources/whisper` and `Resources/base.en.bin` from the release .zip
-   - Place in `Resources/` directory
+2. **Get the bundled models and Whisper executable**:
+   - Download the release .zip from the [releases page](https://github.com/harrykeen18/localscribe/releases)
+   - Copy `whisper`, `base.en.bin`, `ggml-large-v3-turbo-q5_0.bin` and `SortformerNvidiaHigh_v2.1.mlmodelc` from `LocalScribe.app/Contents/Resources/` into a `Resources/` directory in the repository
+   - Or build the Whisper executable yourself with `./build-whisper.sh`
 
 3. Open in Xcode:
    ```bash
@@ -195,13 +205,14 @@ This is experimental software. Report issues via [GitHub Issues](https://github.
 
 ## Version
 
-**v0.2.2-experimental** - Experimental release with Ollama support
+**v0.3.0-experimental** - Experimental release with Ollama support
 
-**For maximum privacy, use the [stable release](https://github.com/harrykeen18/localscribe/releases/tag/v0.2.2-beta) instead.**
+**For maximum privacy, use the [stable release](https://github.com/harrykeen18/localscribe/releases/tag/v0.3.0-beta) instead.**
 
 ## Acknowledgments
 
 - [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Local speech-to-text
+- [FluidAudio](https://github.com/FluidInference/FluidAudio) - On-device speaker diarization (Sortformer)
 - Apple Intelligence - On-device summarization
 - [Ollama](https://ollama.com) - Local/remote LLM support
 

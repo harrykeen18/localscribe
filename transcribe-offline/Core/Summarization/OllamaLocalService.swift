@@ -196,7 +196,7 @@ class OllamaLocalService: ObservableObject, SummarizationProvider {
         let payload = ChatCompletionRequest(
             model: model,
             messages: [
-                ChatMessage(role: "system", content: createSystemPrompt()),
+                ChatMessage(role: "system", content: createSystemPrompt(for: transcript)),
                 ChatMessage(role: "user", content: transcript)
             ],
             temperature: 0.2,
@@ -258,7 +258,7 @@ class OllamaLocalService: ObservableObject, SummarizationProvider {
 
         // Combine system prompt and transcript for native API
         let fullPrompt = """
-        \(createSystemPrompt())
+        \(createSystemPrompt(for: transcript))
 
         Transcript:
         \(transcript)
@@ -309,14 +309,31 @@ class OllamaLocalService: ObservableObject, SummarizationProvider {
         return nativeResponse.response
     }
 
-    private func createSystemPrompt() -> String {
-        """
-        You are an expert note-taking assistant. Your task is to transform transcripts into well-structured, concise Markdown notes.
+    private func createSystemPrompt(for transcript: String) -> String {
+        // Check if transcript has speaker labels (format: [HH:MM:SS - Speaker N]:)
+        let hasSpeakerLabels = transcript.contains("[") && transcript.contains("Speaker")
+
+        let speakerInstructions = hasSpeakerLabels ? """
+
+        **IMPORTANT:** This transcript includes speaker labels in the format `[HH:MM:SS - Speaker N]: text`.
+        - Attribute key points, decisions, and action items to specific speakers
+        - Include a "Participants" section summarizing each speaker's main contributions
+        - Use speaker attribution: "Speaker 1 proposed...", "Speaker 2 agreed that..."
+        """ : ""
+
+        let participantsSection = hasSpeakerLabels ? """
+
+        ## Participants
+        Briefly describe each speaker's main role/topics in the conversation.
+        """ : ""
+
+        return """
+        You are an expert note-taking assistant. Your task is to transform transcripts into well-structured, concise Markdown notes.\(speakerInstructions)
 
         Follow this format:
 
         ## Overview
-        A brief 1-2 sentence overview of what was discussed.
+        A brief 1-2 sentence overview of what was discussed.\(participantsSection)
 
         ## Key Points
         - Main topic 1 with brief description
@@ -329,11 +346,11 @@ class OllamaLocalService: ObservableObject, SummarizationProvider {
         - (if applicable)
 
         ## Action Items
-        - Action item (if a specific person is clearly mentioned in the transcript as responsible, include their name, otherwise just describe the action)
+        - Action item (if a specific person/speaker is mentioned as responsible, include their name/speaker number)
         - (if applicable)
 
         Guidelines:
-        - If people are named in the conversation, reference them by name when relevant to key points, decisions, or actions
+        - If people or speakers are identified, reference them when relevant to key points, decisions, or actions
         - Be concise but comprehensive
         - Use bullet points and headings for clarity
         - Extract actionable items when mentioned

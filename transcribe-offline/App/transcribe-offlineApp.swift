@@ -6,6 +6,12 @@ struct transcribe_offlineApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var statusBarController = StatusBarController()
 
+    init() {
+        // Load settings at launch (not when the main window first appears) so services are
+        // configured and the diarization model starts loading straight away
+        _ = AppSettings.shared
+    }
+
     var body: some Scene {
         WindowGroup {
             MainWindowView()

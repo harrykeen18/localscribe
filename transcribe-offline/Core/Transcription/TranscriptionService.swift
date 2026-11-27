@@ -7,9 +7,32 @@ struct TranscriptionResult {
     let duration: TimeInterval
     let wordCount: Int
     let language: String?
+    let vttTranscript: VTTTranscript?  // Word-level timestamps for diarization
+    let diarizedTranscript: DiarizedTranscript?  // Speaker-labeled transcript
+    let speakerSegments: [SpeakerSegment]?  // Raw speaker segments
 
     var isEmpty: Bool {
         return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Speaker count (if diarization was performed)
+    var speakerCount: Int? {
+        return diarizedTranscript?.speakerCount
+    }
+
+    /// Use diarized text if available, otherwise plain text
+    var displayText: String {
+        return diarizedTranscript?.formattedText ?? text
+    }
+
+    init(text: String, duration: TimeInterval, wordCount: Int, language: String?, vttTranscript: VTTTranscript? = nil, diarizedTranscript: DiarizedTranscript? = nil, speakerSegments: [SpeakerSegment]? = nil) {
+        self.text = text
+        self.duration = duration
+        self.wordCount = wordCount
+        self.language = language
+        self.vttTranscript = vttTranscript
+        self.diarizedTranscript = diarizedTranscript
+        self.speakerSegments = speakerSegments
     }
 }
 
@@ -56,6 +79,12 @@ class TranscriptionService: ObservableObject {
     private let fileManager = FileManager.default
     private let baseTimeoutInterval: TimeInterval = 600 // 10 minutes base timeout
 
+    // Speaker diarization (optional)
+    private let diarizationService = DiarizationService.shared
+    private let transcriptMerger = TranscriptMerger()
+    var enableDiarization = false  // TODO: Wire to AppSettings
+    private var currentTracks: RecordingTracks?  // Separate mic/system tracks of the recording being transcribed
+
     // Bundle paths
     private lazy var whisperExecutablePath: String? = {
         guard let path = Bundle.main.path(forResource: "whisper", ofType: nil) else {
@@ -68,7 +97,9 @@ class TranscriptionService: ObservableObject {
 
     private lazy var modelPath: String? = {
         // Try multiple possible model locations
+        // Prefer the multilingual model when bundled; fall back to English-only
         let possiblePaths = [
+            Bundle.main.path(forResource: "ggml-large-v3-turbo-q5_0", ofType: "bin"),
             Bundle.main.path(forResource: "base.en", ofType: "bin"),
             Bundle.main.path(forResource: "models/base.en", ofType: "bin"),
         ]
@@ -83,6 +114,42 @@ class TranscriptionService: ObservableObject {
         logger.error("Model file not found in any expected location", category: .transcription)
         return nil
     }()
+
+    /// English-only Whisper models have ".en" in their file name
+    private func isEnglishOnlyModel(_ modelPath: String) -> Bool {
+        return URL(fileURLWithPath: modelPath).lastPathComponent.contains(".en.")
+    }
+
+    /// Language arguments for Whisper, depending on the model in use
+    private func languageArguments(for modelPath: String) -> [String] {
+        if isEnglishOnlyModel(modelPath) {
+            return ["--language", "en"]
+        }
+        // Multilingual: auto-detect, and disable context carry-over so mixed-language
+        // audio with short repeated phrases doesn't get stuck repeating itself
+        return ["--language", "auto", "--max-context", "0"]
+    }
+
+    /// Word-level timestamps, so speaker changes can be placed between words rather than between
+    /// whole segments. DTW timestamps follow the audio closely; they need flash attention off.
+    private func wordTimestampArguments(for modelPath: String) -> [String] {
+        // DTW preset names follow the model file name: ggml-large-v3-turbo-q5_0.bin -> large.v3.turbo
+        var preset = URL(fileURLWithPath: modelPath).deletingPathExtension().lastPathComponent
+        if preset.hasPrefix("ggml-") {
+            preset.removeFirst("ggml-".count)
+        }
+        if let quantization = preset.range(of: "-q[0-9]", options: .regularExpression) {
+            preset.removeSubrange(quantization.lowerBound...)
+        }
+        preset = preset.replacingOccurrences(of: "-", with: ".")
+
+        return ["--dtw", preset, "--no-flash-attn"]
+    }
+
+    /// Language recorded on the result (nil when auto-detected / mixed)
+    private func transcriptLanguage(for modelPath: String) -> String? {
+        return isEnglishOnlyModel(modelPath) ? "en" : nil
+    }
 
     private init() {
         logger.info("TranscriptionService initialized", category: .transcription)
@@ -105,10 +172,12 @@ class TranscriptionService: ObservableObject {
         logger.info("✅ Transcription setup validation passed", category: .transcription)
     }
 
-    func transcribe(audioFileURL: URL) async throws -> TranscriptionResult {
+    func transcribe(audioFileURL: URL, tracks: RecordingTracks? = nil) async throws -> TranscriptionResult {
         guard !isTranscribing else {
             throw TranscriptionError.processError("Already transcribing another file")
         }
+
+        currentTracks = tracks
 
         logger.info("Starting transcription of: \(audioFileURL.lastPathComponent)", category: .transcription)
 
@@ -171,18 +240,17 @@ class TranscriptionService: ObservableObject {
         let timeout = calculateTimeout(for: audioDuration)
 
         // Prepare output file
-        let outputURL = audioFileURL.appendingPathExtension("txt")
+        let outputURL = audioFileURL.appendingPathExtension("json")
         logger.info("Transcription output will be saved to: \(outputURL.path)", category: .transcription)
 
         // Prepare command arguments
         let arguments = [
             "-m", modelPath,
             "-f", audioFileURL.path,
-            "-otxt",
+            "-ojf",  // Full JSON output: text plus per-token timestamps
             "--output-file", outputURL.deletingPathExtension().path,
-            "--print-progress",
-            "--language", "en"  // Force English for now
-        ]
+            "--print-progress"
+        ] + wordTimestampArguments(for: modelPath) + languageArguments(for: modelPath)
 
         logger.info("Whisper command: \(whisperPath) \(arguments.joined(separator: " "))", category: .transcription)
 
@@ -208,20 +276,37 @@ class TranscriptionService: ObservableObject {
                 logger.warning("Whisper stderr: \(errorOutput)", category: .transcription)
             }
 
+            // PRIVACY: Whisper prints the transcript to stdout, so only its size is logged
             if !output.isEmpty {
-                logger.debug("Whisper stdout: \(output)", category: .transcription)
+                logger.debug("Whisper stdout: \(output.count) characters", category: .transcription)
             }
 
             progress = 1.0
 
-            // Read the transcription result
-            let transcriptionText = try await readTranscriptionResult(from: outputURL)
+            // Read and parse the VTT transcription result
+            let (transcriptionText, vttTranscript) = try await readTimestampedTranscriptionResult(from: outputURL)
+
+            // Perform speaker diarization if enabled
+            var diarizedTranscript: DiarizedTranscript? = nil
+            var speakerSegments: [SpeakerSegment]? = nil
+
+            if enableDiarization {
+                logger.info("Speaker diarization enabled - processing audio...", category: .transcription)
+                (diarizedTranscript, speakerSegments) = try await performDiarization(
+                    audioFileURL: audioFileURL,
+                    vttTranscript: vttTranscript,
+                    plainText: transcriptionText
+                )
+            }
 
             let result = TranscriptionResult(
                 text: transcriptionText,
                 duration: duration,
                 wordCount: countWords(in: transcriptionText),
-                language: "en"
+                language: transcriptLanguage(for: modelPath),
+                vttTranscript: vttTranscript,
+                diarizedTranscript: diarizedTranscript,
+                speakerSegments: speakerSegments
             )
 
             logger.info("Transcription result - Words: \(result.wordCount), Duration: \(String(format: "%.2f", result.duration))s", category: .transcription)
@@ -250,6 +335,7 @@ class TranscriptionService: ObservableObject {
         progressMessage = "Processing \(chunks.count) chunks (5 min each)"
 
         var allTranscripts: [String] = []
+        var allVTTChunks: [(vtt: VTTTranscript, offset: TimeInterval)] = []
         var totalWords = 0
 
         // Process each chunk sequentially
@@ -262,7 +348,7 @@ class TranscriptionService: ObservableObject {
             progressMessage = "Chunk \(chunkNumber)/\(chunks.count) • \(String(format: "%.0f", chunk.startTime/60))-\(String(format: "%.0f", (chunk.startTime + chunk.duration)/60)) min"
 
             do {
-                let transcript = try await transcribeChunk(
+                let (transcript, vttTranscript) = try await transcribeChunk(
                     audioFileURL: audioFileURL,
                     chunk: chunk,
                     whisperPath: whisperPath,
@@ -271,6 +357,11 @@ class TranscriptionService: ObservableObject {
                 )
 
                 allTranscripts.append(transcript)
+                // Only add VTT if parsing succeeded
+                if let vtt = vttTranscript {
+                    // Whisper's timestamps are already relative to the start of the file, not the chunk
+                    allVTTChunks.append((vtt: vtt, offset: 0))
+                }
                 let words = countWords(in: transcript)
                 totalWords += words
 
@@ -282,6 +373,7 @@ class TranscriptionService: ObservableObject {
                 // Add placeholder for failed chunk to maintain continuity
                 let placeholderText = "[Transcription failed for segment at \(String(format: "%.1f", chunk.startTime/60)) minutes]"
                 allTranscripts.append(placeholderText)
+                // Note: Don't add VTT for failed chunks - will skip diarization for that segment
             }
         }
 
@@ -294,11 +386,49 @@ class TranscriptionService: ObservableObject {
 
         logger.info("✅ Chunked transcription completed: \(chunks.count) chunks processed, \(totalWords) total words, \(String(format: "%.2f", duration))s elapsed", category: .transcription)
 
+        // Merge all VTT transcripts with time offsets
+        let combinedVTT = mergeVTTTranscripts(allVTTChunks)
+
+        // Perform speaker diarization on full audio if enabled
+        var diarizedTranscript: DiarizedTranscript? = nil
+        var speakerSegments: [SpeakerSegment]? = nil
+
+        if enableDiarization {
+            let audioDuration = chunks.reduce(0.0) { $0 + $1.duration }
+            logger.info("Speaker diarization enabled - analyzing full \(String(format: "%.1f", audioDuration/60))min recording...", category: .transcription)
+            progressMessage = "Identifying speakers..."
+
+            do {
+                // Diarize the complete audio file (not chunks)
+                speakerSegments = try await diarizationService.diarize(audioFileURL: audioFileURL, tracks: currentTracks)
+                let speakerCount = Set(speakerSegments!.map { $0.speaker }).count
+                logger.info("✅ Diarization found \(speakerCount) speakers in \(speakerSegments!.count) segments", category: .transcription)
+
+                // Merge diarization with combined VTT transcript
+                logger.info("Merging diarization with chunked transcript...", category: .transcription)
+                let transcriptMerger = TranscriptMerger()
+                diarizedTranscript = transcriptMerger.merge(
+                    vttTranscript: combinedVTT,
+                    speakerSegments: speakerSegments!
+                )
+                logger.info("✅ Diarization completed: \(speakerCount) speakers detected", category: .transcription)
+
+            } catch {
+                logger.error("Diarization failed: \(error.localizedDescription)", category: .transcription)
+                logger.warning("Continuing without speaker diarization", category: .transcription)
+                // Don't fail the entire transcription if diarization fails
+                progressMessage = ""
+            }
+        }
+
         let result = TranscriptionResult(
             text: fullTranscript,
             duration: duration,
             wordCount: totalWords,
-            language: "en"
+            language: transcriptLanguage(for: modelPath),
+            vttTranscript: combinedVTT,
+            diarizedTranscript: diarizedTranscript,
+            speakerSegments: speakerSegments
         )
 
         if result.isEmpty {
@@ -308,10 +438,31 @@ class TranscriptionService: ObservableObject {
         return result
     }
 
+    /// Merge multiple VTT transcripts with time offsets
+    /// - Parameter vttChunks: Array of (VTTTranscript, time offset in seconds) tuples
+    /// - Returns: Combined VTTTranscript with adjusted timestamps
+    private func mergeVTTTranscripts(_ vttChunks: [(vtt: VTTTranscript, offset: TimeInterval)]) -> VTTTranscript {
+        var allWords: [TimestampedWord] = []
+
+        for (vtt, offset) in vttChunks {
+            // Adjust timestamps by chunk offset
+            let adjustedWords = vtt.words.map { word in
+                TimestampedWord(
+                    text: word.text,
+                    start: word.start + offset,
+                    end: word.end + offset
+                )
+            }
+            allWords.append(contentsOf: adjustedWords)
+        }
+
+        return VTTTranscript(words: allWords)
+    }
+
     /// Transcribe a single chunk of audio
-    private func transcribeChunk(audioFileURL: URL, chunk: AudioChunker.Chunk, whisperPath: String, modelPath: String, totalChunks: Int) async throws -> String {
-        // Prepare output file for this chunk
-        let outputURL = audioFileURL.appendingPathExtension("txt")
+    private func transcribeChunk(audioFileURL: URL, chunk: AudioChunker.Chunk, whisperPath: String, modelPath: String, totalChunks: Int) async throws -> (text: String, vttTranscript: VTTTranscript?) {
+        // Prepare output file for this chunk (use VTT for word-level timestamps)
+        let outputURL = audioFileURL.appendingPathExtension("json")
 
         // Build arguments with offset and duration
         let arguments = [
@@ -319,11 +470,10 @@ class TranscriptionService: ObservableObject {
             "-f", audioFileURL.path,
             "-ot", "\(chunk.startOffset)",  // Start offset in milliseconds
             "-d", "\(chunk.durationMs)",    // Duration in milliseconds
-            "-otxt",
+            "-ojf",  // Full JSON output: text plus per-token timestamps for diarization
             "--output-file", outputURL.deletingPathExtension().path,
-            "--print-progress",
-            "--language", "en"
-        ]
+            "--print-progress"
+        ] + wordTimestampArguments(for: modelPath) + languageArguments(for: modelPath)
 
         // Timeout: 10 minutes per 5-minute chunk (2x ratio)
         let chunkTimeout: TimeInterval = 600
@@ -343,10 +493,10 @@ class TranscriptionService: ObservableObject {
             logger.debug("Chunk \(chunk.index + 1) stderr: \(stderr)", category: .transcription)
         }
 
-        // Read the transcription result
-        let transcriptionText = try await readTranscriptionResult(from: outputURL)
+        // Read and parse the VTT transcription result
+        let (transcriptionText, vttTranscript) = try await readTimestampedTranscriptionResult(from: outputURL)
 
-        return transcriptionText
+        return (text: transcriptionText, vttTranscript: vttTranscript)
     }
 
     private nonisolated func runWhisperProcess(executablePath: String, arguments: [String], timeout: TimeInterval, audioDuration: TimeInterval, chunkInfo: (current: Int, total: Int)? = nil) async throws -> (String, String) {
@@ -508,6 +658,94 @@ class TranscriptionService: ObservableObject {
         logger.debug("Cleaned up temporary transcription file", category: .transcription)
 
         return cleanText
+    }
+
+    /// Read and parse Whisper's JSON transcription result (includes word timestamps)
+    private func readTimestampedTranscriptionResult(from outputURL: URL) async throws -> (String, VTTTranscript?) {
+        logger.info("Reading transcription result from: \(outputURL.path)", category: .transcription)
+
+        // Give the file system a moment to flush
+        try await Task.sleep(for: .milliseconds(100))
+
+        guard fileManager.fileExists(atPath: outputURL.path) else {
+            throw TranscriptionError.processError("Transcription output file not created")
+        }
+
+        let transcriptionData = try Data(contentsOf: outputURL)
+
+        // Clean up the temporary transcription file
+        try? fileManager.removeItem(at: outputURL)
+        logger.debug("Cleaned up temporary transcription file", category: .transcription)
+
+        logger.info("Read \(transcriptionData.count) bytes of transcription data", category: .transcription)
+
+        let transcript: VTTTranscript
+        do {
+            transcript = try WhisperJSONParser.parse(transcriptionData)
+        } catch {
+            throw TranscriptionError.processError("Failed to parse transcription output: \(error.localizedDescription)")
+        }
+
+        logger.info("Parsed transcription: \(transcript.words.count) timestamped words", category: .transcription)
+
+        let cleanText = transcript.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return (cleanText, transcript)
+    }
+
+    // MARK: - Speaker Diarization
+
+    /// Perform speaker diarization and merge with transcription
+    private func performDiarization(audioFileURL: URL, vttTranscript: VTTTranscript?, plainText: String) async throws -> (DiarizedTranscript?, [SpeakerSegment]?) {
+        logger.info("Starting speaker diarization...", category: .transcription)
+        progressMessage = "Identifying speakers..."
+
+        do {
+            // Run diarization on the audio file
+            let speakerSegments = try await diarizationService.diarize(audioFileURL: audioFileURL, tracks: currentTracks)
+
+            logger.info("Diarization found \(Set(speakerSegments.map { $0.speaker }).count) speakers in \(speakerSegments.count) segments", category: .transcription)
+
+            // Merge with VTT transcript if available
+            let diarizedTranscript: DiarizedTranscript
+            if let vttTranscript = vttTranscript {
+                // Use high-quality timestamp-based merging
+                logger.info("Merging diarization with VTT timestamps...", category: .transcription)
+                diarizedTranscript = transcriptMerger.merge(vttTranscript: vttTranscript, speakerSegments: speakerSegments)
+            } else {
+                // Fallback: Use simple text-based merging
+                logger.warning("No VTT timestamps available - using simple text-based merging", category: .transcription)
+                _ = transcriptMerger.createSimpleDiarizedText(plainText: plainText, speakerSegments: speakerSegments)
+
+                // Create a simple DiarizedTranscript from the text
+                let segments = speakerSegments.enumerated().map { index, segment in
+                    DiarizedSegment(
+                        speaker: segment.speaker,
+                        start: segment.start,
+                        end: segment.end,
+                        text: "[Text segment \(index + 1)]"  // Placeholder - improve this later
+                    )
+                }
+                diarizedTranscript = DiarizedTranscript(
+                    segments: segments,
+                    speakerCount: Set(speakerSegments.map { $0.speaker }).count,
+                    duration: speakerSegments.last?.end ?? 0
+                )
+            }
+
+            logger.info("✅ Diarization completed: \(diarizedTranscript.speakerCount) speakers detected", category: .transcription)
+            progressMessage = ""
+
+            return (diarizedTranscript, speakerSegments)
+
+        } catch {
+            logger.error("Diarization failed: \(error.localizedDescription)", category: .transcription)
+            // Don't fail the entire transcription if diarization fails
+            // Just log the error and continue without speaker labels
+            logger.warning("Continuing without speaker diarization", category: .transcription)
+            progressMessage = ""
+            return (nil, nil)
+        }
     }
 
     // MARK: - Utility methods

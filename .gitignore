@@ -27,3 +27,5 @@ SECURITY.md
 # Users building from source should download from releases
 Resources/base.en.bin
 Resources/whisper
+Resources/ggml-*.bin
+Resources/*.mlmodelc/

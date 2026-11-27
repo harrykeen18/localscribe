@@ -9,6 +9,7 @@ struct ContentAreaView: View {
     let showSettings: Bool
     let onRetry: () -> Void
     let onRetryForTranscription: ((Transcription) -> Void)?
+    let onDelete: ((Transcription) -> Void)?
 
     var body: some View {
         Group {
@@ -21,6 +22,9 @@ struct ContentAreaView: View {
                     transcription: transcription,
                     onRetrySummarization: {
                         onRetryForTranscription?(transcription)
+                    },
+                    onDelete: {
+                        onDelete?(transcription)
                     }
                 )
             } else {
@@ -52,7 +56,8 @@ struct ContentAreaView: View {
         selectedTranscription: nil,
         showSettings: false,
         onRetry: {},
-        onRetryForTranscription: nil
+        onRetryForTranscription: nil,
+        onDelete: nil
     )
     .frame(width: 600, height: 500)
 }
@@ -66,7 +71,8 @@ struct ContentAreaView: View {
         selectedTranscription: nil,
         showSettings: false,
         onRetry: {},
-        onRetryForTranscription: nil
+        onRetryForTranscription: nil,
+        onDelete: nil
     )
     .frame(width: 600, height: 500)
 }
@@ -80,7 +86,8 @@ struct ContentAreaView: View {
         selectedTranscription: nil,
         showSettings: false,
         onRetry: {},
-        onRetryForTranscription: nil
+        onRetryForTranscription: nil,
+        onDelete: nil
     )
     .frame(width: 600, height: 500)
 }
@@ -110,7 +117,10 @@ struct ContentAreaView: View {
         ),
         showSettings: false,
         onRetry: {},
-        onRetryForTranscription: nil
+        onRetryForTranscription: nil,
+        onDelete: { transcription in
+            print("Deleting: \(transcription.title)")
+        }
     )
     .frame(width: 600, height: 500)
 }
@@ -124,7 +134,8 @@ struct ContentAreaView: View {
         selectedTranscription: nil,
         showSettings: true,
         onRetry: {},
-        onRetryForTranscription: nil
+        onRetryForTranscription: nil,
+        onDelete: nil
     )
     .frame(width: 600, height: 500)
 }
@@ -148,6 +159,9 @@ struct ContentAreaView: View {
         onRetry: {},
         onRetryForTranscription: { transcription in
             print("Retrying summarization for: \(transcription.title)")
+        },
+        onDelete: { transcription in
+            print("Deleting: \(transcription.title)")
         }
     )
     .frame(width: 600, height: 500)

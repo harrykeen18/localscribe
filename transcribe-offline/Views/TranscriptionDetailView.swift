@@ -4,6 +4,7 @@ import AppKit
 struct TranscriptionDetailView: View {
     let transcription: Transcription
     var onRetrySummarization: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
 
     @State private var selectedTab: Tab = .summary
     @State private var showCopySummaryCheck = false
@@ -48,6 +49,20 @@ struct TranscriptionDetailView: View {
                         .font(.subheadline)
                         .foregroundColor(.secondary)
 
+                    // Speaker count (if diarization was performed)
+                    if let speakerCount = transcription.speakerCount {
+                        Text("•")
+                            .foregroundColor(.secondary)
+
+                        HStack(spacing: 4) {
+                            Image(systemName: "person.2.fill")
+                                .font(.caption)
+                            Text("\(speakerCount) speaker\(speakerCount == 1 ? "" : "s")")
+                                .font(.subheadline)
+                        }
+                        .foregroundColor(.blue)
+                    }
+
                     // Provider (if summarized)
                     if let provider = transcription.summaryProvider {
                         Text("•")
@@ -69,6 +84,37 @@ struct TranscriptionDetailView: View {
                 alignment: .bottom
             )
 
+            // Interruption Warning Banner
+            if transcription.wasInterrupted == true {
+                HStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.orange)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Partial Recording")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.primary)
+
+                        if let reason = transcription.interruptionReason {
+                            Text(reason)
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    Spacer()
+                }
+                .padding(12)
+                .background(Color.orange.opacity(0.1))
+                .overlay(
+                    Rectangle()
+                        .fill(Color.orange.opacity(0.3))
+                        .frame(height: 1),
+                    alignment: .bottom
+                )
+            }
+
             // Tab Picker
             HStack(spacing: 0) {
                 TabButton(title: "Summary", isSelected: selectedTab == .summary) {
@@ -88,7 +134,7 @@ struct TranscriptionDetailView: View {
             case .summary:
                 SelectableMarkdownText(markdown: transcription.summary)
             case .transcript:
-                SelectableTranscriptText(text: transcription.transcript)
+                SelectableTranscriptText(text: transcription.displayTranscript)
             }
 
             // Action bar with wrapping buttons
@@ -162,6 +208,25 @@ struct TranscriptionDetailView: View {
                     .cornerRadius(6)
                 }
                 .buttonStyle(.plain)
+
+                // Delete button - only for completed/failed items (not placeholders)
+                if !transcription.isPlaceholder, let onDeleteAction = onDelete {
+                    Button(action: onDeleteAction) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 14, weight: .medium))
+                                .frame(width: 14, height: 14)
+                            Text("Delete")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .frame(minWidth: 130, minHeight: 32)
+                        .padding(.horizontal, 16)
+                        .background(Color.red)
+                        .foregroundColor(.white)
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -207,7 +272,7 @@ struct TranscriptionDetailView: View {
     private func copyTranscript() {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(transcription.transcript, forType: .string)
+        pasteboard.setString(transcription.displayTranscript, forType: .string)
 
         showCopyTranscriptCheck = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
@@ -238,25 +303,31 @@ struct TranscriptionDetailView: View {
                     .appendingPathComponent("\(baseName)-summary")
                     .appendingPathExtension("md")
 
-                let summaryContent = """
+                var metadata = """
                 ---
                 Title: \(transcription.title)
                 Date: \(transcription.formattedFullDate())
                 Duration: \(transcription.duration)
                 Word Count: \(transcription.wordCount)
-                ---
-
-                \(transcription.summary)
                 """
+
+                // Add speaker count if available
+                if let speakerCount = transcription.speakerCount {
+                    metadata += "\nSpeakers: \(speakerCount)"
+                }
+
+                metadata += "\n---\n\n"
+
+                let summaryContent = metadata + transcription.summary
 
                 try summaryContent.write(to: summaryURL, atomically: true, encoding: .utf8)
 
-                // Create transcript file
+                // Create transcript file (use diarized if available)
                 let transcriptURL = directory
                     .appendingPathComponent("\(baseName)-transcript")
                     .appendingPathExtension("txt")
 
-                try transcription.transcript.write(to: transcriptURL, atomically: true, encoding: .utf8)
+                try transcription.displayTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
 
                 // Success
                 showExportAlert = true

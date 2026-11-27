@@ -110,7 +110,11 @@ class SummarizationManager: ObservableObject {
     // MARK: - Summarization
 
     /// Summarize using the best available provider
-    func summarize(transcript: String) async throws -> SummaryResult {
+    /// - Parameters:
+    ///   - transcript: Plain text transcript (fallback)
+    ///   - diarizedTranscript: Speaker-labeled transcript (preferred for multi-speaker conversations)
+    ///   - speakerCount: Number of speakers detected (for context)
+    func summarize(transcript: String, diarizedTranscript: String? = nil, speakerCount: Int? = nil) async throws -> SummaryResult {
         guard let provider = await getBestProvider() else {
             // Provide different error messages for manual vs auto mode
             if let selectedType = selectedProviderType {
@@ -122,14 +126,17 @@ class SummarizationManager: ObservableObject {
             }
         }
 
-        logger.info("Summarizing with provider: \(provider.displayName)", category: .transcription)
+        // Use diarized transcript if available for better speaker attribution
+        let transcriptToSummarize = diarizedTranscript ?? transcript
+        let speakerInfo = speakerCount.map { " (\($0) speakers)" } ?? ""
+        logger.info("Summarizing with provider: \(provider.displayName)\(speakerInfo)", category: .transcription)
 
         // Check if we should use 3-pass summarization with system instructions for Foundation Models
         if useHierarchicalSummarization,
            let foundationModels = provider as? FoundationModelsSummarizer {
             logger.info("Using 3-pass summarization: Clean → Condense → Summarize", category: .transcription)
             do {
-                let hierarchicalResult = try await hierarchicalSummarizer.summarizeWithChunks(transcript: transcript, using: foundationModels)
+                let hierarchicalResult = try await hierarchicalSummarizer.summarizeWithChunks(transcript: transcriptToSummarize, using: foundationModels, speakerCount: speakerCount)
                 logger.info("3-pass summarization successful: \(hierarchicalResult.passes.count) passes in \(String(format: "%.2f", hierarchicalResult.totalDuration))s", category: .transcription)
 
                 return SummaryResult(
@@ -142,7 +149,7 @@ class SummarizationManager: ObservableObject {
                 // Check if error is due to context window limit
                 if isContextWindowError(error) {
                     logger.warning("3-pass summarization exceeded context window, falling back to traditional chunking...", category: .transcription)
-                    return try await summarizeWithChunking(transcript: transcript, provider: provider)
+                    return try await summarizeWithChunking(transcript: transcriptToSummarize, provider: provider)
                 } else {
                     logger.error("3-pass summarization failed: \(error.localizedDescription)", category: .transcription)
                     throw error
@@ -152,14 +159,14 @@ class SummarizationManager: ObservableObject {
 
         do {
             // Use standard single-pass summarization
-            let result = try await provider.summarize(transcript: transcript)
+            let result = try await provider.summarize(transcript: transcriptToSummarize)
             logger.info("Summarization successful with \(provider.displayName)", category: .transcription)
             return result
         } catch {
             // Check if error is due to context window limit
             if isContextWindowError(error) {
                 logger.warning("Context window exceeded, retrying with chunking...", category: .transcription)
-                return try await summarizeWithChunking(transcript: transcript, provider: provider)
+                return try await summarizeWithChunking(transcript: transcriptToSummarize, provider: provider)
             } else {
                 logger.error("Summarization failed with \(provider.displayName): \(error.localizedDescription)", category: .transcription)
                 throw error
@@ -250,7 +257,8 @@ class SummarizationManager: ObservableObject {
         logger.info("Starting chunked summarization", category: .transcription)
 
         // Split transcript into chunks
-        let chunkResult = chunker.chunkTranscript(transcript, maxWords: 2000, overlapWords: 200)
+        // ~2000 tokens of mixed-language, speaker-labelled transcript, leaving room for the prompt and a 500-token response
+        let chunkResult = chunker.chunkTranscript(transcript, maxWords: 900, overlapWords: 100)
 
         logger.info("Processing \(chunkResult.totalChunks) chunks...", category: .transcription)
 

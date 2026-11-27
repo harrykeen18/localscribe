@@ -99,14 +99,22 @@ struct SidebarItemView: View {
     var body: some View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: 4) {
-                // Title
-                Text(transcription.title)
-                    .font(.system(size: 13))
-                    .fontWeight(.medium)
-                    .foregroundColor(isSelected ? .white : .primary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Title with optional warning icon
+                HStack(spacing: 4) {
+                    if transcription.wasInterrupted == true {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(isSelected ? .white.opacity(0.9) : .orange)
+                    }
+
+                    Text(transcription.title)
+                        .font(.system(size: 13))
+                        .fontWeight(.medium)
+                        .foregroundColor(isSelected ? .white : .primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 // Date and duration
                 HStack(spacing: 4) {
@@ -121,6 +129,14 @@ struct SidebarItemView: View {
                     Text(transcription.duration)
                         .font(.system(size: 11))
                         .foregroundColor(isSelected ? .white.opacity(0.85) : .secondary)
+                }
+
+                // Processing status (if applicable)
+                if let statusText = getStatusText(for: transcription) {
+                    Text(statusText)
+                        .font(.system(size: 10))
+                        .foregroundColor(isSelected ? .white.opacity(0.75) : .secondary)
+                        .italic()
                 }
             }
             .padding(.horizontal, 12)
@@ -145,6 +161,28 @@ struct SidebarItemView: View {
             return Color(nsColor: .controlBackgroundColor).opacity(0.5)
         } else {
             return Color.clear
+        }
+    }
+
+    private func getStatusText(for transcription: Transcription) -> String? {
+        switch transcription.summaryStatus {
+        case .pending:
+            return nil  // Initial state, no status needed
+        case .transcribing:
+            if let progress = transcription.transcriptionProgress, progress > 0 {
+                let percent = Int(progress * 100)
+                return "Transcribing \(percent)%"
+            } else {
+                return "Waiting to transcribe"
+            }
+        case .summarizationQueued:
+            return "Waiting for summarization"
+        case .inProgress:
+            return "Summarizing..."
+        case .completed:
+            return nil  // Completed, no status needed
+        case .failed:
+            return "Failed"
         }
     }
 }

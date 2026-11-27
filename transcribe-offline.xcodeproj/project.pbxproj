@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4A23ED142EC8B43100B7F3B1 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = 4A23ED132EC8B43100B7F3B1 /* FluidAudio */; };
 		E27378DD2E952AD900AF18CC /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E27378DC2E952AD900AF18CC /* AVFoundation.framework */; };
 		E27378DF2E952AE500AF18CC /* ScreenCaptureKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E27378DE2E952AE500AF18CC /* ScreenCaptureKit.framework */; platformFilters = (macos, ); };
 		E27378E12E952AED00AF18CC /* CoreMedia.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E27378E02E952AED00AF18CC /* CoreMedia.framework */; };
@@ -53,6 +54,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E27378E12E952AED00AF18CC /* CoreMedia.framework in Frameworks */,
+				4A23ED142EC8B43100B7F3B1 /* FluidAudio in Frameworks */,
 				E27378DF2E952AE500AF18CC /* ScreenCaptureKit.framework in Frameworks */,
 				E27378E32E952AF500AF18CC /* CoreAudio.framework in Frameworks */,
 				E27378DD2E952AD900AF18CC /* AVFoundation.framework in Frameworks */,
@@ -112,6 +114,7 @@
 			);
 			name = "transcribe-offline";
 			packageProductDependencies = (
+				4A23ED132EC8B43100B7F3B1 /* FluidAudio */,
 			);
 			productName = "transcribe-offline";
 			productReference = E27378BE2E945F7600AF18CC /* transcribe-offline.app */;
@@ -141,6 +144,9 @@
 			);
 			mainGroup = E27378B52E945F7600AF18CC;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4A23ED122EC8B43100B7F3B1 /* XCRemoteSwiftPackageReference "FluidAudio" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E27378BF2E945F7600AF18CC /* Products */;
 			projectDirPath = "";
@@ -440,6 +446,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4A23ED122EC8B43100B7F3B1 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.17.7;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4A23ED132EC8B43100B7F3B1 /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4A23ED122EC8B43100B7F3B1 /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E27378B62E945F7600AF18CC /* Project object */;
 }

@@ -32,7 +32,20 @@ class ScreenCaptureKitRecorder: NSObject {
     private let microphoneOutputURL: URL
 
     // State
-    nonisolated(unsafe) private var isRecording = false
+    nonisolated(unsafe) internal var isRecording = false
+
+    // Error tracking
+    nonisolated(unsafe) private var consecutiveWriteFailures = 0
+    private let maxConsecutiveFailures = 5  // Stop recording after 5 consecutive write failures
+    nonisolated(unsafe) private var lastBufferTimestamp: Date?
+
+    // Stream health monitoring
+    private var healthCheckTimer: Timer?
+    private let healthCheckInterval: TimeInterval = 5.0  // Check every 5 seconds
+    private let bufferTimeout: TimeInterval = 10.0  // Fail if no buffers for 10 seconds
+
+    // Callback for notifying parent when recording fails
+    var onRecordingFailed: ((Error) -> Void)?
 
     // Buffer counters for logging
     nonisolated(unsafe) private static var systemAudioBufferCount: Int = 0
@@ -164,6 +177,9 @@ class ScreenCaptureKitRecorder: NSObject {
             logger.info("Stream.startCapture() returned successfully", category: .audio)
             logger.info("✅ ScreenCaptureKit recording started", category: .audio)
             logger.info("Waiting for audio buffers to arrive...", category: .audio)
+
+            // Start health check timer to monitor stream
+            startHealthCheckTimer()
         } catch {
             isRecording = false
             logger.error("Failed to start stream capture: \(error.localizedDescription)", category: .audio)
@@ -180,6 +196,9 @@ class ScreenCaptureKitRecorder: NSObject {
 
         logger.info("Stopping ScreenCaptureKit recording...", category: .audio)
 
+        // Stop health check timer
+        stopHealthCheckTimer()
+
         // Stop the stream
         if let stream = stream {
             try await stream.stopCapture()
@@ -195,6 +214,63 @@ class ScreenCaptureKitRecorder: NSObject {
 
         isRecording = false
         logger.info("✅ ScreenCaptureKit recording stopped", category: .audio)
+    }
+
+    // MARK: - Stream Health Monitoring
+
+    @MainActor
+    private func startHealthCheckTimer() {
+        // Initialize timestamp
+        lastBufferTimestamp = Date()
+
+        // Create timer
+        healthCheckTimer = Timer.scheduledTimer(
+            withTimeInterval: healthCheckInterval,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkStreamHealth()
+            }
+        }
+
+        logger.info("Stream health monitoring started (check every \(healthCheckInterval)s, timeout: \(bufferTimeout)s)", category: .audio)
+    }
+
+    @MainActor
+    private func stopHealthCheckTimer() {
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
+        lastBufferTimestamp = nil
+        logger.debug("Stream health monitoring stopped", category: .audio)
+    }
+
+    @MainActor
+    private func checkStreamHealth() {
+        guard isRecording else { return }
+
+        guard let lastTimestamp = lastBufferTimestamp else {
+            // No buffers received yet - give it more time
+            return
+        }
+
+        let timeSinceLastBuffer = Date().timeIntervalSince(lastTimestamp)
+
+        if timeSinceLastBuffer > bufferTimeout {
+            logger.error("Stream health check failed: No buffers received for \(String(format: "%.1f", timeSinceLastBuffer))s", category: .audio)
+
+            let error = NSError(
+                domain: "ScreenCaptureKitRecorder",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey: "Recording stream appears to be dead (no audio data for \(Int(timeSinceLastBuffer))s)"]
+            )
+
+            // Stop recording and notify parent
+            isRecording = false
+            stopHealthCheckTimer()
+            onRecordingFailed?(error)
+        } else {
+            logger.debug("Stream health check: OK (last buffer \(String(format: "%.1f", timeSinceLastBuffer))s ago)", category: .audio)
+        }
     }
 
     // MARK: - Audio Processing
@@ -601,13 +677,39 @@ class ScreenCaptureKitRecorder: NSObject {
         }
 
         // Write to file on serial queue for thread safety
-        fileQueue.async { [bufferCopy] in
-            guard let audioFile = audioFile else { return }
+        fileQueue.async { [weak self, bufferCopy] in
+            guard let self = self, let audioFile = audioFile else { return }
 
             do {
                 try audioFile.write(from: bufferCopy)
+                // Reset failure counter on successful write
+                self.consecutiveWriteFailures = 0
+                // Update last buffer timestamp
+                self.lastBufferTimestamp = Date()
             } catch {
-                // Silently fail
+                // Log write failures and track consecutive failures
+                Task { @MainActor in
+                    Logger.shared.error("Audio write failed for \(sourceType): \(error.localizedDescription)", category: .audio)
+                }
+
+                self.consecutiveWriteFailures += 1
+
+                // If we hit too many consecutive failures, stop recording
+                if self.consecutiveWriteFailures >= self.maxConsecutiveFailures {
+                    let recordingError = NSError(
+                        domain: "ScreenCaptureKitRecorder",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Recording failed: Too many consecutive write failures (\(self.consecutiveWriteFailures))"]
+                    )
+
+                    Task { @MainActor in
+                        Logger.shared.error("Stopping recording due to \(self.consecutiveWriteFailures) consecutive write failures", category: .audio)
+                        self.onRecordingFailed?(recordingError)
+                    }
+
+                    // Mark as not recording to prevent further processing
+                    self.isRecording = false
+                }
             }
         }
     }
@@ -646,6 +748,12 @@ private class AudioStreamOutput: NSObject, SCStreamOutput {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         Task { @MainActor in
             Logger.shared.error("ScreenCaptureKit stream stopped with error: \(error.localizedDescription)", category: .audio)
+
+            // Update recording state and notify parent
+            if let recorder = recorder {
+                recorder.isRecording = false
+                recorder.onRecordingFailed?(error)
+            }
         }
     }
 }
