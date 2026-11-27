@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 echo "🔨 Building static whisper executable for macOS app bundling"
 echo ""
 
@@ -88,13 +90,34 @@ else
 fi
 
 # Copy to Resources
-PROJECT_DIR="/Users/harry/Developement/transcribe-offline"
+PROJECT_DIR="$SCRIPT_DIR"
 RESOURCES_DIR="$PROJECT_DIR/Resources"
 
 echo ""
 echo "📋 Copying to: $RESOURCES_DIR/whisper"
 cp "$WHISPER_BIN" "$RESOURCES_DIR/whisper"
 chmod +x "$RESOURCES_DIR/whisper"
+
+# Sign with Hardened Runtime and sandbox inheritance so the app can be notarized.
+# Ad-hoc is enough here: Xcode re-signs it with the release identity on export,
+# keeping these options and entitlements.
+echo ""
+echo "🔏 Signing whisper with Hardened Runtime..."
+ENTITLEMENTS_FILE="$(mktemp)"
+cat > "$ENTITLEMENTS_FILE" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.inherit</key>
+	<true/>
+</dict>
+</plist>
+PLIST
+codesign --force --sign - --options runtime --entitlements "$ENTITLEMENTS_FILE" "$RESOURCES_DIR/whisper"
+rm -f "$ENTITLEMENTS_FILE"
 
 # Verify the copied file
 echo ""

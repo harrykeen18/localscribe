@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Combine
 import Accelerate
+import AppKit
 
 enum RecorderState: Equatable {
     case idle
@@ -58,12 +59,22 @@ class AudioRecorder: NSObject, ObservableObject {
 
     // Services
     private let logger = Logger.shared
-    private let transcriptionService = TranscriptionService.shared
+    private let transcriptionQueue = TranscriptionQueue.shared
+    private let summarizationQueue = SummarizationQueue.shared
     private let summarizationManager = SummarizationManager.shared
+    private let powerManagement = PowerManagementService.shared
 
-    // Current results
+    // Current results (only for retry functionality)
     @Published var currentTranscription: TranscriptionResult?
     @Published var currentSummary: SummaryResult?
+
+    // Recording interruption tracking
+    private(set) var wasInterrupted: Bool = false
+    private(set) var interruptionReason: String?
+
+    // Last enqueued item (for MainWindowView to track)
+    private(set) var lastEnqueuedTranscriptionId: UUID?
+    private(set) var lastRecordingDuration: TimeInterval = 0
 
     // MARK: - Initialization
 
@@ -72,22 +83,90 @@ class AudioRecorder: NSObject, ObservableObject {
         logger.info("AudioRecorder initialized", category: .audio)
         currentTranscription = nil
 
+        // Set up sleep/wake notifications as backup safety
+        setupSleepNotifications()
+
         // Clean up old audio files on launch
         Task {
             await cleanupOldAudioFiles()
         }
     }
 
+    deinit {
+        // Remove sleep notification observers
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+    }
+
+    // MARK: - Sleep Notifications
+
+    private func setupSleepNotifications() {
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+
+        // System will sleep notification
+        notificationCenter.addObserver(
+            self,
+            selector: #selector(systemWillSleep),
+            name: NSWorkspace.willSleepNotification,
+            object: nil
+        )
+
+        // System did wake notification
+        notificationCenter.addObserver(
+            self,
+            selector: #selector(systemDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
+
+        logger.info("Sleep/wake notifications configured", category: .system)
+    }
+
+    @objc private func systemWillSleep(_ notification: Notification) {
+        logger.warning("System is going to sleep!", category: .system)
+
+        if state == .recording {
+            logger.error("System sleeping during active recording - this should not happen with power assertion!", category: .system)
+            logger.warning("Recording may be interrupted. Attempting graceful shutdown...", category: .audio)
+
+            // Trigger recording failure handling
+            Task { @MainActor in
+                let error = NSError(
+                    domain: "AudioRecorder",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "System went to sleep during recording"]
+                )
+                await self.handleRecordingFailure(error: error)
+            }
+        }
+    }
+
+    @objc private func systemDidWake(_ notification: Notification) {
+        logger.info("System woke from sleep", category: .system)
+
+        // If we're in a stopped state but power assertion is still active, release it
+        if state != .recording && powerManagement.hasActiveAssertion {
+            logger.warning("Cleaning up power assertion after wake", category: .system)
+            powerManagement.allowSleepAfterRecording()
+        }
+    }
+
     // MARK: - Public Interface
 
     func startRecording() async {
-        guard state == .idle else {
-            logger.warning("Start recording called but state is not idle: \(state)", category: .audio)
+        // Only block if currently recording or just stopped
+        switch state {
+        case .recording, .stopped:
+            logger.warning("Cannot start recording - already recording or just stopped: \(state)", category: .audio)
             return
+        case .idle, .complete, .error, .transcribing, .summarizing:
+            logger.info("Starting recording from \(state)", category: .audio)
         }
 
         do {
             logger.info("Starting recording (system audio + microphone)", category: .audio)
+
+            // Prevent system and display sleep during recording
+            powerManagement.preventSleepDuringRecording()
 
             // Use ScreenCaptureKit for all recording (macOS 15+)
             // This captures both system audio and microphone in a synchronized manner
@@ -101,6 +180,9 @@ class AudioRecorder: NSObject, ObservableObject {
             logger.info("✅ Recording started successfully", category: .audio)
 
         } catch {
+            // Release power assertions if recording failed to start
+            powerManagement.allowSleepAfterRecording()
+
             let errorMessage = "Failed to start recording: \(error.localizedDescription)"
             logger.error(errorMessage, category: .audio)
             state = .error(errorMessage, transcript: nil)
@@ -122,6 +204,13 @@ class AudioRecorder: NSObject, ObservableObject {
             systemOutputURL: screenCaptureSystemURL!,
             microphoneOutputURL: screenCaptureMicURL!
         )
+
+        // Set up failure callback to handle recording errors
+        screenCaptureRecorder?.onRecordingFailed = { [weak self] error in
+            Task { @MainActor [weak self] in
+                await self?.handleRecordingFailure(error: error)
+            }
+        }
 
         // Start recording - this will request Screen Recording + Microphone permissions
         try await screenCaptureRecorder?.startRecording()
@@ -145,6 +234,9 @@ class AudioRecorder: NSObject, ObservableObject {
                 try await screenCaptureRecorder?.stopRecording()
                 screenCaptureRecorder = nil
             }
+
+            // Allow system and display to sleep now that recording is stopped
+            powerManagement.allowSleepAfterRecording()
 
             stopDurationTimer()
             state = .stopped
@@ -177,11 +269,61 @@ class AudioRecorder: NSObject, ObservableObject {
             }
 
         } catch {
+            // Allow system and display to sleep even if stopping failed
+            powerManagement.allowSleepAfterRecording()
+
             let errorMessage = "Failed to stop recording: \(error.localizedDescription)"
             logger.error(errorMessage, category: .audio)
             state = .error(errorMessage, transcript: nil)
         }
     }
+
+    // MARK: - Error Handling
+
+    private func handleRecordingFailure(error: Error) async {
+        logger.error("Recording failed unexpectedly: \(error.localizedDescription)", category: .audio)
+        logger.info("Attempting to save partial recording...", category: .audio)
+
+        // Mark recording as interrupted
+        wasInterrupted = true
+        interruptionReason = error.localizedDescription
+
+        // Clean up recording state
+        stopDurationTimer()
+        powerManagement.allowSleepAfterRecording()
+
+        // Stop the recorder
+        do {
+            if screenCaptureRecorder != nil {
+                try await screenCaptureRecorder?.stopRecording()
+                screenCaptureRecorder = nil
+            }
+        } catch {
+            logger.warning("Error stopping recorder during failure handling: \(error.localizedDescription)", category: .audio)
+        }
+
+        // Try to save partial recording
+        if let systemURL = screenCaptureSystemURL, let micURL = screenCaptureMicURL {
+            logger.info("Partial recording files available, attempting transcription", category: .audio)
+            state = .stopped
+
+            do {
+                let mixedURL = try mixAudioFiles(systemURL: systemURL, microphoneURL: micURL)
+                await startSingleTranscription(for: mixedURL)
+            } catch {
+                let errorMessage = "Failed to save partial recording: \(error.localizedDescription)"
+                logger.error(errorMessage, category: .audio)
+                state = .error(errorMessage, transcript: nil)
+            }
+        } else {
+            // No audio files available
+            let errorMessage = "Recording failed and no partial audio could be recovered"
+            logger.error(errorMessage, category: .audio)
+            state = .error(errorMessage, transcript: nil)
+        }
+    }
+
+    // MARK: - Retry
 
     func retryTranscription() async {
         // Check if we have a transcript in the error state (summarization failed)
@@ -195,11 +337,6 @@ class AudioRecorder: NSObject, ObservableObject {
         logger.warning("Retry transcription called but no transcript available in error state", category: .transcription)
     }
 
-    func retrySummarizationForTranscript(_ transcript: TranscriptionResult) async {
-        logger.info("Retrying summarization for stored transcript", category: .transcription)
-        await startSummarization(transcript: transcript)
-    }
-
     func startNewRecording() async {
         logger.info("Starting new recording session", category: .audio)
         state = .idle
@@ -208,90 +345,46 @@ class AudioRecorder: NSObject, ObservableObject {
         screenCaptureSystemURL = nil
         screenCaptureMicURL = nil
         duration = 0
+        wasInterrupted = false
+        interruptionReason = nil
     }
 
     // MARK: - Transcription
 
     private func startSingleTranscription(for audioURL: URL) async {
-        logger.info("Starting single transcription for: \(audioURL.lastPathComponent)", category: .transcription)
+        logger.info("Enqueuing transcription for: \(audioURL.lastPathComponent)", category: .transcription)
 
-        // PRIVACY: Always cleanup audio files when this function exits (success or failure)
-        defer {
-            cleanupAudioFile(at: audioURL)
+        // Don't clean up audio file immediately - the queue needs it
+        // The queue will handle cleanup after transcription completes
 
-            if let systemURL = screenCaptureSystemURL {
-                cleanupAudioFile(at: systemURL)
-            }
-            if let micURL = screenCaptureMicURL {
-                cleanupAudioFile(at: micURL)
-            }
+        // Keep copies of the raw audio if the user opted in (off by default)
+        if UserDefaults.standard.bool(forKey: "keepAudioRecordings") {
+            keepAudioCopies(of: [audioURL, screenCaptureSystemURL, screenCaptureMicURL].compactMap { $0 })
         }
 
-        guard transcriptionService.isSetupValid() else {
-            let errorMessage = "Transcription setup invalid:\n\(transcriptionService.getSetupStatus())"
-            logger.error(errorMessage, category: .transcription)
-            state = .error(errorMessage, transcript: nil)
-            return
+        // The separate tracks let diarization tell local from remote speakers
+        var tracks: RecordingTracks? = nil
+        if let micURL = screenCaptureMicURL, let systemURL = screenCaptureSystemURL, audioURL != micURL, audioURL != systemURL {
+            tracks = RecordingTracks(microphoneURL: micURL, systemURL: systemURL)
         }
 
-        // Retry logic: Attempt transcription up to 3 times
-        let maxAttempts = 3
-        var lastError: Error?
+        // Enqueue transcription
+        let queueId = transcriptionQueue.enqueue(audioFileURL: audioURL, tracks: tracks, recordingDuration: duration)
+        lastEnqueuedTranscriptionId = queueId
+        lastRecordingDuration = duration
 
-        for attempt in 1...maxAttempts {
-            if attempt > 1 {
-                logger.info("Retrying transcription (attempt \(attempt)/\(maxAttempts))...", category: .transcription)
-                try? await Task.sleep(for: .seconds(1)) // Wait 1 second between retries
-            }
+        logger.info("Transcription enqueued with ID: \(queueId)", category: .transcription)
 
-            // Monitor transcription progress
-            let progressTask = Task {
-                while transcriptionService.isTranscribing {
-                    await MainActor.run {
-                        state = .transcribing(progress: transcriptionService.progress)
-                    }
-                    try await Task.sleep(for: .milliseconds(100))
-                }
-            }
-
-            do {
-                let result = try await transcriptionService.transcribe(audioFileURL: audioURL)
-                progressTask.cancel()
-
-                logger.info("Transcription completed successfully", category: .transcription)
-                logger.info("Transcribed \(result.wordCount) words in \(String(format: "%.2f", result.duration)) seconds", category: .transcription)
-
-                currentTranscription = result
-
-                // Start summarization automatically
-                await startSummarization(transcript: result)
-
-                return // Success - exit function (defer will cleanup audio)
-
-            } catch {
-                progressTask.cancel()
-                lastError = error
-
-                // Log error diagnostics (for debugging) - NO audio content
-                logTranscriptionErrorDiagnostics(audioURL: audioURL, error: error, attempt: attempt)
-
-                if attempt < maxAttempts {
-                    logger.warning("Transcription attempt \(attempt) failed: \(error.localizedDescription)", category: .transcription)
-                } else {
-                    // All attempts failed
-                    logger.error("Transcription failed after \(maxAttempts) attempts: \(error.localizedDescription)", category: .transcription)
-                }
-            }
-        }
-
-        // All retry attempts failed - show error to user
-        if let error = lastError {
-            let errorMessage = "Transcription failed after \(maxAttempts) attempts: \(error.localizedDescription)"
-            state = .error(errorMessage, transcript: nil)
-        }
-
-        // Note: defer block will cleanup audio files automatically
+        // Reset state to idle - AudioRecorder is now ready for next recording
+        // MainWindowView will monitor the queue and update placeholders
+        state = .idle
+        duration = 0
+        wasInterrupted = false
+        interruptionReason = nil
+        screenCaptureSystemURL = nil
+        screenCaptureMicURL = nil
     }
+
 
     private func logTranscriptionErrorDiagnostics(audioURL: URL, error: Error, attempt: Int) {
         // Log diagnostic info for debugging (NOT audio content)
@@ -553,6 +646,34 @@ class AudioRecorder: NSObject, ObservableObject {
             let bytesPerMinute = Double(totalSize) / (duration / 60.0)
             let rateString = ByteCountFormatter.string(fromByteCount: Int64(bytesPerMinute), countStyle: .file)
             logger.info("Recording rate: \(rateString)/minute", category: .file)
+        }
+    }
+
+    /// Folder where kept recordings are stored (outside the temp directory, so the 24h cleanup never touches it)
+    static var keptAudioDirectory: URL {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return documents.appendingPathComponent("LocalScribe Recordings", isDirectory: true)
+    }
+
+    private func keepAudioCopies(of urls: [URL]) {
+        let fileManager = FileManager.default
+        let directory = Self.keptAudioDirectory
+
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            logger.warning("Failed to create kept audio folder: \(error.localizedDescription)", category: .file)
+            return
+        }
+
+        for url in Set(urls) where fileManager.fileExists(atPath: url.path) {
+            let destination = directory.appendingPathComponent(url.lastPathComponent)
+            do {
+                try fileManager.copyItem(at: url, to: destination)
+                logger.info("Kept audio copy: \(url.lastPathComponent)", category: .file)
+            } catch {
+                logger.warning("Failed to keep audio copy of \(url.lastPathComponent): \(error.localizedDescription)", category: .file)
+            }
         }
     }
 

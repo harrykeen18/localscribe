@@ -7,30 +7,42 @@ LocalScribe captures audio from meeting apps (Zoom, Google Meet, etc.), transcri
 ## Features
 
 - **System Audio + Microphone Capture** - Records both sides of your meetings via ScreenCaptureKit
-- **Local Transcription** - Whisper.cpp base.en model (bundled with app, no downloads needed)
+- **Local Transcription** - Whisper.cpp large-v3-turbo multilingual model with automatic language detection, including mixed-language recordings (bundled with app, no downloads needed)
+- **Speaker Diarization** - On-device Sortformer model labels up to 4 speakers, using the separate microphone and system audio tracks to identify you
 - **Apple Intelligence Summarization** - 3-pass hierarchical summarization with structured markdown output
 - **Encrypted Storage** - AES-256-GCM encryption for all transcripts, keys stored in macOS Keychain
 - **Zero Network Access** - No external API calls, no telemetry, no analytics
 
 ## Requirements
 
-- **macOS 15.1 (Sequoia)** or later
+- **macOS 26 (Tahoe)** or later
 - **Apple Silicon** (M1, M2, M3, M4, or newer)
 - **Apple Intelligence** downloaded and enabled in System Settings
-- ~500MB disk space
+- ~1GB disk space
 
 ## Installation
 
-1. Download `LocalScribe-v0.2.2-beta.zip` from [GitHub Releases](https://github.com/harrykeen18/localscribe/releases)
+1. Download `LocalScribe-v0.3.0-beta.zip` from [GitHub Releases](https://github.com/harrykeen18/localscribe/releases)
 2. **Verify checksum** (recommended):
    ```bash
-   shasum -a 256 -c LocalScribe-v0.2.2-beta.zip.sha256
-   # Should output: LocalScribe-v0.2.2-beta.zip: OK
+   shasum -a 256 -c LocalScribe-v0.3.0-beta.zip.sha256
+   # Should output: LocalScribe-v0.3.0-beta.zip: OK
    ```
 3. Extract the .zip file
 4. Move `LocalScribe.app` to `/Applications`
-5. **First launch**: Right-click → Open (bypasses Gatekeeper for unsigned build)
+5. Open LocalScribe (signed with Developer ID and notarized by Apple)
 6. Grant **Microphone** and **Screen Recording** permissions when prompted
+
+### Updating from v0.2.x
+
+Replace the old `LocalScribe.app` in `/Applications` with the new one. Your transcripts are kept.
+
+Because this release is the first signed with a Developer ID certificate, macOS treats it as a new app once:
+
+- When asked whether LocalScribe can use its key in your Keychain, click **Always Allow**. This key decrypts your existing transcripts.
+- Grant **Microphone** and **Screen Recording** again. If recording still fails, remove the old LocalScribe entry under System Settings → Privacy & Security → Screen & System Audio Recording, then add it again.
+
+If the Keychain prompt is denied, no transcripts are lost: LocalScribe sets the unreadable history aside and restores it on the next launch where the key can be read.
 
 ## Usage
 
@@ -94,7 +106,7 @@ Transcripts stored locally at:
    ```bash
    rm -rf ~/Library/Containers/transcribe-offline/
    ```
-3. Delete Keychain entries: Open Keychain Access, search for "transcribe-offline", delete all entries
+3. Delete Keychain entries: Open Keychain Access, search for "com.transcribe", delete all entries
 
 ## Security
 
@@ -141,15 +153,11 @@ We promise:
 - **Keychain**: Encryption keys protected by your login password/Touch ID
 - **No Network**: Info.plist blocks HTTP requests
 - **Input Validation**: File paths sanitized, user input validated
-- **Minimal Dependencies**: Only Whisper.cpp (no external SDKs)
+- **Minimal Dependencies**: Whisper.cpp and FluidAudio (on-device speaker diarization)
 
 ### Known Limitations (Beta)
 
-- ⚠️ **Unsigned build**: Not signed by Apple Developer ID (requires right-click → Open)
-- ⚠️ **Not notarized**: Not yet submitted to Apple for notarization
 - ⚠️ **No key recovery**: If encryption key is lost, transcripts cannot be decrypted
-
-These will be addressed in future releases.
 
 ### Threat Model
 
@@ -179,10 +187,10 @@ These will be addressed in future releases.
    git checkout stable
    ```
 
-2. **Download Whisper model files**:
-   - Download from the [latest release](https://github.com/harrykeen18/localscribe/releases/latest)
-   - Extract `Resources/whisper` and `Resources/base.en.bin` from the release .zip
-   - Place in `Resources/` directory
+2. **Get the bundled models and Whisper executable**:
+   - Download the release .zip from the [latest release](https://github.com/harrykeen18/localscribe/releases/latest)
+   - Copy `whisper`, `base.en.bin`, `ggml-large-v3-turbo-q5_0.bin` and `SortformerNvidiaHigh_v2.1.mlmodelc` from `LocalScribe.app/Contents/Resources/` into a `Resources/` directory in the repository
+   - Or build the Whisper executable yourself with `./build-whisper.sh`
 
 3. Open in Xcode:
    ```bash
@@ -225,13 +233,14 @@ This is beta software. Bugs are expected!
 
 ## Version
 
-**v0.2.2-beta** - Beta release (Apple Intelligence only)
+**v0.3.0-beta** - Beta release (Apple Intelligence only)
 
 See [CHANGELOG](https://github.com/harrykeen18/localscribe/releases) for version history.
 
 ## Acknowledgments
 
 - [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Local speech-to-text engine
+- [FluidAudio](https://github.com/FluidInference/FluidAudio) - On-device speaker diarization (Sortformer)
 - Apple Intelligence (Foundation Models) - On-device summarization
 
 ---

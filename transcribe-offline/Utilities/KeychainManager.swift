@@ -12,7 +12,15 @@ class KeychainManager {
     static let shared = KeychainManager()
 
     private let logger = Logger.shared
-    private let service = "com.transcribe.encryption"
+    // Builds with a non-release bundle ID (e.g. test builds) get their own key,
+    // so they can never replace the key protecting the release app's history.
+    private let service: String = {
+        let releaseBundleID = "transcribe-offline"
+        guard let bundleID = Bundle.main.bundleIdentifier, bundleID != releaseBundleID else {
+            return "com.transcribe.encryption"
+        }
+        return "com.transcribe.encryption.\(bundleID)"
+    }()
     private let account = "transcript-encryption-key"
 
     private init() {}
@@ -23,10 +31,15 @@ class KeychainManager {
     /// - Returns: 256-bit symmetric encryption key
     func getEncryptionKey() throws -> SymmetricKey {
         // Try to retrieve existing key first
-        if let existingKey = try? retrieveKey() {
+        do {
+            let existingKey = try retrieveKey()
             logger.debug("Retrieved existing encryption key from Keychain", category: .file)
             return existingKey
+        } catch KeychainError.keyNotFound {
+            // Fall through and generate one
         }
+        // Any other failure (e.g. Keychain access denied or timed out) is passed on: generating a
+        // new key here would replace the existing one and make saved transcripts unreadable
 
         // No existing key - generate new one
         logger.info("Generating new encryption key (first launch)", category: .file)

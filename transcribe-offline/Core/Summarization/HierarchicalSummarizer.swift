@@ -19,6 +19,13 @@ import Foundation
 class HierarchicalSummarizer {
     private let logger = Logger.shared
 
+    // Token budgets for the on-device model's 4096-token context (prompt, instructions and response)
+
+    /// Transcript per cleaning call: the cleaned output is about as long as the input
+    private let cleaningChunkTokens = 1500
+    /// Transcript per condensing call, alongside a rolling summary of up to ~900 tokens and a 900-token response
+    private let condensingChunkTokens = 1400
+
     /// Result from a single pass
     struct PassResult {
         let passName: String
@@ -38,10 +45,15 @@ class HierarchicalSummarizer {
     // MARK: - 3-Pass Dynamic Summarization
 
     /// 3-pass approach: Clean → Condense → Summarize
-    func summarizeWithChunks(transcript: String, using provider: FoundationModelsSummarizer) async throws -> HierarchicalResult {
+    /// - Parameters:
+    ///   - transcript: The transcript to summarize
+    ///   - provider: The Foundation Models provider
+    ///   - speakerCount: Number of speakers (for context-aware summarization)
+    func summarizeWithChunks(transcript: String, using provider: FoundationModelsSummarizer, speakerCount: Int? = nil) async throws -> HierarchicalResult {
         let overallStartTime = Date()
 
-        logger.info("Starting 3-pass summarization: Clean → Condense → Summarize", category: .transcription)
+        let speakerInfo = speakerCount.map { " with \($0) speakers" } ?? ""
+        logger.info("Starting 3-pass summarization: Clean → Condense → Summarize\(speakerInfo)", category: .transcription)
 
         var allPasses: [PassResult] = []
 
@@ -53,62 +65,49 @@ class HierarchicalSummarizer {
         let pass1StartTime = Date()
         let cleanedTranscript: String
 
+        let speakerContext = speakerCount.map { "\nThis transcript contains \($0) speakers. Preserve all speaker labels in the format [HH:MM:SS - Speaker N]: text" } ?? ""
         let cleaningSystemInstructions = """
-        You are a transcript editor. Your job is to clean and tidy meeting transcripts while preserving ALL content and details. Your output length should match input length. Only remove actual filler words (um, uh, you know) and fix obvious repetitions. Do not paraphrase or condense.
+        You are a transcript editor. Your job is to clean and tidy transcripts while preserving ALL content and details. Your output length should match input length. Only remove actual filler words (um, uh, you know) and fix obvious repetitions. Do not paraphrase or condense.\(speakerContext)
         """
 
-        if initialWordCount > 2000 {
-            logger.info("Pass 1: Transcript too long (\(initialWordCount) words), cleaning in chunks", category: .transcription)
+        if estimateTokens(transcript) > cleaningChunkTokens {
+            logger.info("Pass 1: Transcript too long (~\(estimateTokens(transcript)) tokens), cleaning in chunks", category: .transcription)
 
-            let chunks = chunkTranscript(transcript, chunkSize: 1200, overlap: 200)
+            let chunks = chunkTranscript(transcript, maxTokens: cleaningChunkTokens)
             logger.info("Pass 1: Cleaning \(chunks.count) chunks", category: .transcription)
 
             var cleanedChunks: [String] = []
 
             for (index, chunk) in chunks.enumerated() {
-                let cleanPrompt = """
-                Clean and tidy this section of a meeting transcript (chunk \(index + 1)/\(chunks.count)).
+                logger.info("Pass 1: Chunk \(index + 1)/\(chunks.count): \(countWords(chunk)) words, ~\(estimateTokens(chunk)) tokens", category: .transcription)
 
-                Your tasks:
-                1. Make the text more coherent and readable
-                2. Remove weird repetitions and filler words (um, uh, you know, etc.)
-                3. Fix formatting issues
-                4. Preserve ALL names, numbers, dates, details, decisions, and action items
-                5. Keep the natural flow and conversational tone
+                // Cleaning keeps the text, so the output needs about as many tokens as the input
+                let cleanedChunk = try await completeSplittingOnOverflow(chunk) { section in
+                    let cleanPrompt = """
+                    Clean and tidy this section of a meeting transcript (chunk \(index + 1)/\(chunks.count)).
 
-                IMPORTANT: Your output should be approximately the SAME LENGTH as the input. Only remove actual filler words and obvious repetitions. Do not paraphrase or shorten complete sentences.
+                    Your tasks:
+                    1. Make the text more coherent and readable
+                    2. Remove weird repetitions and filler words (um, uh, you know, etc.)
+                    3. Fix formatting issues
+                    4. Preserve ALL names, numbers, dates, details, decisions, and action items
+                    5. Keep the natural flow and conversational tone
 
-                DO NOT summarize or condense - just clean and tidy while keeping everything.
+                    IMPORTANT: Your output should be approximately the SAME LENGTH as the input. Only remove actual filler words and obvious repetitions. Do not paraphrase or shorten complete sentences.
 
-                Transcript section:
-                \(chunk)
-                """
+                    DO NOT summarize or condense - just clean and tidy while keeping everything.
 
-                // Calculate token budget for diagnostics
-                let chunkWordCount = countWords(chunk)
-                let chunkTokens = estimateTokens(chunk)
-                let promptTokens = estimateTokens(cleanPrompt) - chunkTokens  // Prompt overhead only
-                let instructionsTokens = estimateTokens(cleaningSystemInstructions)
-                let outputTokens = 1600
-                let totalTokens = chunkTokens + promptTokens + instructionsTokens + outputTokens
+                    Transcript section:
+                    \(section)
+                    """
 
-                logger.info("Pass 1: Chunk \(index + 1)/\(chunks.count) token analysis:", category: .transcription)
-                logger.info("  - Chunk: \(chunkWordCount) words, ~\(chunkTokens) tokens", category: .transcription)
-                logger.info("  - Prompt overhead: ~\(promptTokens) tokens", category: .transcription)
-                logger.info("  - Instructions: ~\(instructionsTokens) tokens", category: .transcription)
-                logger.info("  - Output allowance: \(outputTokens) tokens", category: .transcription)
-                logger.info("  - TOTAL ESTIMATE: ~\(totalTokens) tokens (limit: 4096)", category: .transcription)
-
-                if totalTokens > 4096 {
-                    logger.warning("  ⚠️ Chunk \(index + 1) EXCEEDS context window by ~\(totalTokens - 4096) tokens!", category: .transcription)
+                    return try await provider.generateCompletion(
+                        prompt: cleanPrompt,
+                        maxTokens: estimateTokens(section) + 300,
+                        temperature: 0.3,
+                        instructions: cleaningSystemInstructions
+                    )
                 }
-
-                let cleanedChunk = try await provider.generateCompletion(
-                    prompt: cleanPrompt,
-                    maxTokens: 1600,
-                    temperature: 0.3,
-                    instructions: cleaningSystemInstructions
-                )
 
                 cleanedChunks.append(cleanedChunk)
             }
@@ -116,7 +115,7 @@ class HierarchicalSummarizer {
             cleanedTranscript = cleanedChunks.joined(separator: "\n\n")
 
         } else {
-            logger.info("Pass 1: Transcript short (\(initialWordCount) words), cleaning in single pass", category: .transcription)
+            logger.info("Pass 1: Transcript short (~\(estimateTokens(transcript)) tokens), cleaning in single pass", category: .transcription)
 
             let cleanPrompt = """
             Clean and tidy this meeting transcript.
@@ -138,7 +137,7 @@ class HierarchicalSummarizer {
 
             cleanedTranscript = try await provider.generateCompletion(
                 prompt: cleanPrompt,
-                maxTokens: 1600,  // Reduced from 3000 to stay within 4096 token limit
+                maxTokens: estimateTokens(transcript) + 300,
                 temperature: 0.3,
                 instructions: cleaningSystemInstructions
             )
@@ -161,100 +160,72 @@ class HierarchicalSummarizer {
         let condensedTranscript: String
 
         let condensingSystemInstructions = """
-        You are a meeting transcript condenser. Your job is to progressively build a comprehensive prose summary by incorporating new information from each section. Maintain all important content in natural prose format. Keep specific details, names, numbers, and context.
+        You are a transcript condenser. Your job is to progressively build a comprehensive prose summary by incorporating new information from each section. Maintain all important content in natural prose format. Keep specific details, names, numbers, and context.\(speakerContext)
         """
 
-        // If cleaned transcript is too long (>3000 words), use rolling summary method
-        if cleanedWordCount > 3000 {
-            logger.info("Pass 2: Cleaned transcript too long (\(cleanedWordCount) words), using rolling summary method", category: .transcription)
+        // If the cleaned transcript does not fit alongside the condensed output, use the rolling summary method
+        if estimateTokens(cleanedTranscript) > condensingChunkTokens {
+            logger.info("Pass 2: Cleaned transcript too long (~\(estimateTokens(cleanedTranscript)) tokens), using rolling summary method", category: .transcription)
 
-            let chunks = chunkTranscript(cleanedTranscript, chunkSize: 1200, overlap: 200)
+            let chunks = chunkTranscript(cleanedTranscript, maxTokens: condensingChunkTokens)
             logger.info("Pass 2: Processing \(chunks.count) chunks with rolling summary", category: .transcription)
 
             var rollingSummary = ""
 
             for (index, chunk) in chunks.enumerated() {
-                let chunkWordCount = countWords(chunk)
-                let currentSummaryWordCount = countWords(rollingSummary)
+                logger.info("Pass 2: Chunk \(index + 1)/\(chunks.count): ~\(estimateTokens(chunk)) tokens, summary so far ~\(estimateTokens(rollingSummary)) tokens", category: .transcription)
 
-                let rollingPrompt: String
-                if index == 0 {
-                    // First chunk: Create initial summary
-                    rollingPrompt = """
-                    This is the first section of a longer meeting transcript (section 1/\(chunks.count)).
+                // A section that still overflows is folded into the summary in smaller pieces
+                rollingSummary = try await foldSplittingOnOverflow(chunk, into: rollingSummary) { section, summary in
+                    let rollingPrompt: String
+                    if summary.isEmpty {
+                        // First chunk: Create initial summary
+                        rollingPrompt = """
+                        This is the first section of a longer meeting transcript (section \(index + 1)/\(chunks.count)).
 
-                    Create a prose summary of this section (~500-800 words). Focus on:
-                    - Key topics and discussions
-                    - Specific details: names, numbers, dates, organizations
-                    - Decisions and action items
-                    - Important context
+                        Create a prose summary of this section (~400-600 words). Focus on:
+                        - Key topics and discussions
+                        - Specific details: names, numbers, dates, organizations
+                        - Decisions and action items
+                        - Important context
 
-                    Keep in natural prose/paragraph format (NOT bullet points).
+                        Keep in natural prose/paragraph format (NOT bullet points).
 
-                    Section 1 (~\(chunkWordCount) words):
-                    \(chunk)
-                    """
-                } else {
-                    // Subsequent chunks: Update rolling summary
-                    rollingPrompt = """
-                    You have a running summary of a meeting transcript. Now incorporate information from the next section.
+                        Section \(index + 1) (~\(countWords(section)) words):
+                        \(section)
+                        """
+                    } else {
+                        // Subsequent chunks: Update rolling summary
+                        rollingPrompt = """
+                        You have a running summary of a meeting transcript. Now incorporate information from the next section.
 
-                    This is section \(index + 1) of \(chunks.count).
+                        This is section \(index + 1) of \(chunks.count).
 
-                    Your task:
-                    1. Read the current summary and the new section
-                    2. Integrate new information from the section into the summary
-                    3. Maintain chronological flow
-                    4. Keep all specific details from both the summary and new section
-                    5. Remove redundancy (if new section repeats what's already summarized, don't duplicate)
-                    6. Keep the updated summary around 500-800 words (can grow slightly as you add sections)
+                        Your task:
+                        1. Read the current summary and the new section
+                        2. Integrate new information from the section into the summary
+                        3. Maintain chronological flow
+                        4. Keep all specific details from both the summary and new section
+                        5. Remove redundancy (if new section repeats what's already summarized, don't duplicate)
+                        6. Keep the updated summary around 400-600 words
 
-                    Keep in natural prose/paragraph format (NOT bullet points).
+                        Keep in natural prose/paragraph format (NOT bullet points).
 
-                    Current summary (~\(currentSummaryWordCount) words):
-                    \(rollingSummary)
+                        Current summary (~\(countWords(summary)) words):
+                        \(summary)
 
-                    New section \(index + 1) (~\(chunkWordCount) words):
-                    \(chunk)
-                    """
+                        New section \(index + 1) (~\(countWords(section)) words):
+                        \(section)
+                        """
+                    }
+
+                    return try await provider.generateCompletion(
+                        prompt: rollingPrompt,
+                        maxTokens: 900,
+                        temperature: 0.4,
+                        instructions: condensingSystemInstructions
+                    )
                 }
-
-                // Calculate token budget for diagnostics
-                let chunkTokens = estimateTokens(chunk)
-                let promptTokens = estimateTokens(rollingPrompt) - chunkTokens - (index == 0 ? 0 : estimateTokens(rollingSummary))  // Overhead only
-                let instructionsTokens = estimateTokens(condensingSystemInstructions)
-                let outputTokens = 1000
-
-                let totalTokens: Int
-                if index == 0 {
-                    // First chunk: no rolling summary yet
-                    totalTokens = chunkTokens + promptTokens + instructionsTokens + outputTokens
-                    logger.info("Pass 2: Chunk \(index + 1)/\(chunks.count) token analysis:", category: .transcription)
-                    logger.info("  - New section: \(chunkWordCount) words, ~\(chunkTokens) tokens", category: .transcription)
-                } else {
-                    // Subsequent chunks: include rolling summary
-                    let summaryTokens = estimateTokens(rollingSummary)
-                    totalTokens = summaryTokens + chunkTokens + promptTokens + instructionsTokens + outputTokens
-                    logger.info("Pass 2: Chunk \(index + 1)/\(chunks.count) token analysis:", category: .transcription)
-                    logger.info("  - Current summary: \(currentSummaryWordCount) words, ~\(summaryTokens) tokens", category: .transcription)
-                    logger.info("  - New section: \(chunkWordCount) words, ~\(chunkTokens) tokens", category: .transcription)
-                }
-
-                logger.info("  - Prompt overhead: ~\(promptTokens) tokens", category: .transcription)
-                logger.info("  - Instructions: ~\(instructionsTokens) tokens", category: .transcription)
-                logger.info("  - Output allowance: \(outputTokens) tokens", category: .transcription)
-                logger.info("  - TOTAL ESTIMATE: ~\(totalTokens) tokens (limit: 4096)", category: .transcription)
-
-                if totalTokens > 4096 {
-                    logger.warning("  ⚠️ Chunk \(index + 1) EXCEEDS context window by ~\(totalTokens - 4096) tokens!", category: .transcription)
-                }
-
-                rollingSummary = try await provider.generateCompletion(
-                    prompt: rollingPrompt,
-                    maxTokens: 1000,  // Allow room for growing summary
-                    temperature: 0.4,
-                    instructions: condensingSystemInstructions
-                )
             }
 
             condensedTranscript = rollingSummary
@@ -303,9 +274,33 @@ class HierarchicalSummarizer {
         // PASS 3: Extract structured summary
         let pass3StartTime = Date()
 
+        let speakerAwareInstructions = speakerCount.map { count in
+            count > 1 ? "\nThis is a \(count)-person conversation. Attribute key points, decisions, and action items to specific speakers when possible." : ""
+        } ?? ""
+
         let summarySystemInstructions = """
-        You are a precise meeting minutes assistant. Extract key information into a structured summary format. Always use specific names, numbers, and details from the source material. Never generalize entities into categories.
+        You are a precise meeting minutes assistant. Extract key information into a structured summary format. Always use specific names, numbers, and details from the source material. Never generalize entities into categories.\(speakerAwareInstructions)
         """
+
+        let participantsSection = speakerCount.map { count in
+            count > 1 ? """
+
+            ## Participants
+            Briefly describe each speaker's main role/topics in the conversation.
+            - Speaker 1: [Key topics they discussed]
+            - Speaker 2: [Key topics they discussed]
+            """ : ""
+        } ?? ""
+
+        let speakerAttributionGuidelines = speakerCount.map { count in
+            count > 1 ? """
+
+            **Speaker Attribution:**
+            - When summarizing key points, attribute them to speakers: "Speaker 1 suggested...", "Speaker 2 agreed that..."
+            - For action items: "Speaker 1 to complete X by Friday"
+            - For decisions: "Agreed by Speaker 2, proposed by Speaker 1"
+            """ : ""
+        } ?? ""
 
         let summaryPrompt = """
         Create a structured summary from this condensed transcript.
@@ -315,10 +310,10 @@ class HierarchicalSummarizer {
 
         Create a polished markdown summary with this structure:
 
-        # [Meeting Title - 5-10 words]
+        # [Title - 5-10 words]
 
         ## Overview
-        A single paragraph (3-5 sentences) summarizing the meeting's purpose, key participants, main topics, and primary outcomes. Include specific names and numbers where relevant.
+        A single paragraph (3-5 sentences) summarizing the purpose, key participants, main topics, and primary outcomes. Include specific names and numbers where relevant.\(participantsSection)
 
         ## Topics Discussed
         Organize content by topic using ### headings. Create as many topics as needed (could be 1, could be 50).
@@ -340,7 +335,7 @@ class HierarchicalSummarizer {
         Guidelines:
         - Use SPECIFIC details from the transcript (names, numbers, exact entities)
         - Eliminate redundancy
-        - Organize logically by topic
+        - Organize logically by topic\(speakerAttributionGuidelines)
         """
 
         logger.info("Pass 3: Extracting structured summary", category: .transcription)
@@ -383,36 +378,89 @@ class HierarchicalSummarizer {
         return text.split(separator: " ").count
     }
 
-    /// Estimate token count from text (rough approximation: 1.33 tokens per word)
+    /// Estimate token count from text. Based on UTF-8 size rather than words: a per-word estimate
+    /// holds for plain English but undercounts other languages, accents, numbers and speaker labels.
     private func estimateTokens(_ text: String) -> Int {
-        let wordCount = countWords(text)
-        return Int(Double(wordCount) * 1.33)
+        return text.utf8.count / 3
     }
 
-    /// Split transcript into overlapping chunks
-    private func chunkTranscript(_ transcript: String, chunkSize: Int, overlap: Int) -> [String] {
-        let allWords = transcript.split(separator: " ")
-        let totalWords = allWords.count
-
-        guard totalWords > chunkSize else {
-            return [transcript]
-        }
-
-        var chunks: [String] = []
-        var startIndex = 0
-
-        while startIndex < totalWords {
-            let endIndex = min(startIndex + chunkSize, totalWords)
-            let chunk = allWords[startIndex..<endIndex].joined(separator: " ")
-            chunks.append(chunk)
-
-            startIndex += (chunkSize - overlap)
-
-            if endIndex == totalWords {
-                break
+    /// Split transcript into chunks of at most `maxTokens` (estimated), breaking between
+    /// speaker turns where possible so each chunk starts with a speaker label
+    private func chunkTranscript(_ transcript: String, maxTokens: Int) -> [String] {
+        // Turns longer than a chunk are broken up between words
+        var pieces: [String] = []
+        for turn in transcript.components(separatedBy: "\n\n") where !turn.isEmpty {
+            if estimateTokens(turn) <= maxTokens {
+                pieces.append(turn)
+                continue
+            }
+            var current: [Substring] = []
+            for word in turn.split(separator: " ") {
+                if !current.isEmpty && estimateTokens(current.joined(separator: " ") + " " + word) > maxTokens {
+                    pieces.append(current.joined(separator: " "))
+                    current.removeAll()
+                }
+                current.append(word)
+            }
+            if !current.isEmpty {
+                pieces.append(current.joined(separator: " "))
             }
         }
 
+        var chunks: [String] = []
+        var current = ""
+        for piece in pieces {
+            let candidate = current.isEmpty ? piece : current + "\n\n" + piece
+            if !current.isEmpty && estimateTokens(candidate) > maxTokens {
+                chunks.append(current)
+                current = piece
+            } else {
+                current = candidate
+            }
+        }
+        if !current.isEmpty {
+            chunks.append(current)
+        }
+
         return chunks
+    }
+
+    /// Whether an error is the model reporting that the prompt and response do not fit its context window
+    private func isContextOverflow(_ error: Error) -> Bool {
+        return error.localizedDescription.lowercased().contains("context window")
+    }
+
+    /// Split text into two halves of similar size, between speaker turns where possible
+    private func halves(of text: String) -> (String, String)? {
+        let chunks = chunkTranscript(text, maxTokens: max(1, estimateTokens(text) / 2 + 1))
+        guard chunks.count >= 2 else { return nil }
+        let middle = chunks.count / 2
+        return (chunks[..<middle].joined(separator: "\n\n"), chunks[middle...].joined(separator: "\n\n"))
+    }
+
+    /// Run a text-to-text step, splitting the text in half and joining the results if it does not fit.
+    /// The token estimate is approximate, so the model's own overflow error is the final check.
+    private func completeSplittingOnOverflow(_ text: String, _ step: (String) async throws -> String) async throws -> String {
+        do {
+            return try await step(text)
+        } catch where isContextOverflow(error) {
+            guard let (first, second) = halves(of: text) else { throw error }
+            logger.warning("Section (~\(estimateTokens(text)) tokens) exceeded the context window, splitting it in two", category: .transcription)
+            let firstResult = try await completeSplittingOnOverflow(first, step)
+            let secondResult = try await completeSplittingOnOverflow(second, step)
+            return firstResult + "\n\n" + secondResult
+        }
+    }
+
+    /// Fold a section into a rolling summary, folding it in two halves if it does not fit
+    private func foldSplittingOnOverflow(_ section: String, into summary: String, _ step: (String, String) async throws -> String) async throws -> String {
+        do {
+            return try await step(section, summary)
+        } catch where isContextOverflow(error) {
+            guard let (first, second) = halves(of: section) else { throw error }
+            logger.warning("Section (~\(estimateTokens(section)) tokens) exceeded the context window, splitting it in two", category: .transcription)
+            let withFirst = try await foldSplittingOnOverflow(first, into: summary, step)
+            return try await foldSplittingOnOverflow(second, into: withFirst, step)
+        }
     }
 }

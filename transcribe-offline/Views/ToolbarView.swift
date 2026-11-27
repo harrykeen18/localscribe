@@ -52,7 +52,8 @@ struct ToolbarView: View {
     @ViewBuilder
     private var recordingButton: some View {
         switch state {
-        case .idle, .complete, .error:
+        case .idle, .complete, .error, .transcribing, .summarizing:
+            // Can start recording from idle, complete, error, OR while processing
             Button(action: onStartRecording) {
                 HStack(spacing: 8) {
                     Image(systemName: "circle")
@@ -68,6 +69,7 @@ struct ToolbarView: View {
                 .cornerRadius(6)
             }
             .buttonStyle(.plain)
+            .help(processingStateHelp)
 
         case .recording:
             Button(action: onStopRecording) {
@@ -86,7 +88,8 @@ struct ToolbarView: View {
             }
             .buttonStyle(.plain)
 
-        case .stopped, .transcribing, .summarizing:
+        case .stopped:
+            // Only show disabled state immediately after stopping (brief moment)
             HStack(spacing: 8) {
                 ProgressView()
                     .scaleEffect(0.7)
@@ -100,6 +103,17 @@ struct ToolbarView: View {
             .background(Color.gray.opacity(0.3))
             .foregroundColor(.secondary)
             .cornerRadius(6)
+        }
+    }
+
+    private var processingStateHelp: String {
+        switch state {
+        case .transcribing:
+            return "Start a new recording (previous recording will continue processing)"
+        case .summarizing:
+            return "Start a new recording (previous recording will continue processing)"
+        default:
+            return "Start Recording"
         }
     }
 

@@ -7,7 +7,9 @@ import CryptoKit
 
 enum SummaryStatus: String, Codable, Equatable {
     case pending        // Summary not yet generated
-    case inProgress     // Currently generating
+    case transcribing   // Currently transcribing (in transcription queue)
+    case summarizationQueued  // Transcription done, waiting for summarization
+    case inProgress     // Currently generating summary
     case completed      // Summary successfully generated
     case failed         // Summarization failed
 }
@@ -23,8 +25,20 @@ struct Transcription: Identifiable, Codable, Equatable {
     var isPlaceholder: Bool
     var summaryStatus: SummaryStatus
     var summaryProvider: String?  // Which provider generated the summary
+    var wasInterrupted: Bool?  // True if recording was interrupted (system sleep, stream failure, etc.)
+    var interruptionReason: String?  // Optional description of why recording was interrupted
+    var transcriptionQueueId: UUID?  // ID in TranscriptionQueue (if in queue)
+    var summarizationQueueId: UUID?  // ID in SummarizationQueue (if in queue)
+    var transcriptionProgress: Double?  // Progress of transcription (0.0-1.0)
+    var diarizedTranscript: String?  // Transcript with speaker labels if diarization was performed
+    var speakerCount: Int?  // Number of speakers detected (if diarization was performed)
 
-    init(id: UUID = UUID(), title: String, date: Date, duration: String, summary: String, transcript: String, wordCount: Int, isPlaceholder: Bool = false, summaryStatus: SummaryStatus = .completed, summaryProvider: String? = nil) {
+    /// Display the diarized transcript if available, otherwise fallback to plain transcript
+    var displayTranscript: String {
+        return diarizedTranscript ?? transcript
+    }
+
+    init(id: UUID = UUID(), title: String, date: Date, duration: String, summary: String, transcript: String, wordCount: Int, isPlaceholder: Bool = false, summaryStatus: SummaryStatus = .completed, summaryProvider: String? = nil, wasInterrupted: Bool? = nil, interruptionReason: String? = nil, transcriptionQueueId: UUID? = nil, summarizationQueueId: UUID? = nil, transcriptionProgress: Double? = nil, diarizedTranscript: String? = nil, speakerCount: Int? = nil) {
         self.id = id
         self.title = title
         self.date = date
@@ -35,6 +49,13 @@ struct Transcription: Identifiable, Codable, Equatable {
         self.isPlaceholder = isPlaceholder
         self.summaryStatus = summaryStatus
         self.summaryProvider = summaryProvider
+        self.wasInterrupted = wasInterrupted
+        self.interruptionReason = interruptionReason
+        self.transcriptionQueueId = transcriptionQueueId
+        self.summarizationQueueId = summarizationQueueId
+        self.transcriptionProgress = transcriptionProgress
+        self.diarizedTranscript = diarizedTranscript
+        self.speakerCount = speakerCount
     }
 }
 
@@ -63,6 +84,7 @@ class TranscriptionHistoryManager: ObservableObject {
 
         // Load existing history
         load()
+        recoverUnreadableHistories()
     }
 
     // MARK: - Public Methods
@@ -74,6 +96,16 @@ class TranscriptionHistoryManager: ObservableObject {
     }
 
     func delete(_ transcription: Transcription) {
+        // Cancel any active queue items before deleting
+        if let queueId = transcription.transcriptionQueueId {
+            logger.info("Cancelling active transcription queue item: \(queueId)", category: .transcription)
+            TranscriptionQueue.shared.remove(id: queueId)
+        }
+        if let queueId = transcription.summarizationQueueId {
+            logger.info("Cancelling active summarization queue item: \(queueId)", category: .transcription)
+            SummarizationQueue.shared.remove(id: queueId)
+        }
+
         transcriptions.removeAll { $0.id == transcription.id }
         save()
         logger.info("Deleted transcription: \(transcription.title)", category: .file)
@@ -192,6 +224,57 @@ class TranscriptionHistoryManager: ObservableObject {
         } catch {
             logger.error("Failed to load history: \(error.localizedDescription)", category: .file)
             transcriptions = []
+            // Move the file aside rather than letting the next save overwrite it, e.g. when
+            // Keychain access to the encryption key was denied after an update
+            preserveUnreadableHistory()
+        }
+    }
+
+    /// Prefix for history files that couldn't be read and were kept for later recovery
+    private static let unreadablePrefix = "history-unreadable-"
+
+    private func preserveUnreadableHistory() {
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let backupURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("\(Self.unreadablePrefix)\(timestamp).json")
+        do {
+            try FileManager.default.moveItem(at: fileURL, to: backupURL)
+            logger.error("Kept unreadable history at \(backupURL.lastPathComponent) for recovery", category: .file)
+        } catch {
+            logger.error("Failed to preserve unreadable history: \(error.localizedDescription)", category: .file)
+        }
+    }
+
+    /// Retries history files that couldn't be read on an earlier launch and merges any that now decrypt
+    private func recoverUnreadableHistories() {
+        let directory = fileURL.deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        var recoveredCount = 0
+        for url in files where url.lastPathComponent.hasPrefix(Self.unreadablePrefix) {
+            guard let data = try? Data(contentsOf: url),
+                  let jsonData = try? decryptData(data),
+                  let recovered = try? decoder.decode([Transcription].self, from: jsonData) else {
+                logger.info("History backup \(url.lastPathComponent) still unreadable, keeping it", category: .file)
+                continue
+            }
+
+            let existingIDs = Set(transcriptions.map(\.id))
+            let missing = recovered.filter { !existingIDs.contains($0.id) }
+            transcriptions.append(contentsOf: missing)
+            recoveredCount += missing.count
+            try? FileManager.default.removeItem(at: url)
+            logger.info("Recovered \(missing.count) transcriptions from \(url.lastPathComponent)", category: .file)
+        }
+
+        if recoveredCount > 0 {
+            transcriptions.sort { $0.date > $1.date }
+            save()
         }
     }
 

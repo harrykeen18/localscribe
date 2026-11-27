@@ -30,6 +30,63 @@ struct SettingsView: View {
             // Content
             ScrollView {
                 VStack(spacing: 24) {
+                    // Transcription Settings Section
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Transcription")
+                            .font(.title2)
+                            .fontWeight(.semibold)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Configure transcription features:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            // Speaker Diarization Toggle
+                            HStack(spacing: 12) {
+                                Toggle(isOn: $settings.enableSpeakerDiarization) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Speaker Diarization")
+                                            .font(.body)
+
+                                        Text("Automatically identify and label different speakers in the transcript")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .toggleStyle(.switch)
+                            }
+                            .padding(.vertical, 8)
+
+                            #if DEBUG
+                            // Keep Audio Toggle (test builds only)
+                            HStack(spacing: 12) {
+                                Toggle(isOn: $settings.keepAudioRecordings) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Keep Audio Recordings")
+                                            .font(.body)
+
+                                        Text("Save a copy of each recording's audio files for testing")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                .toggleStyle(.switch)
+
+                                Button("Show in Finder") {
+                                    let directory = AudioRecorder.keptAudioDirectory
+                                    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                                    NSWorkspace.shared.open(directory)
+                                }
+                            }
+                            .padding(.vertical, 8)
+                            #endif
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+                    .background(Color.primary.opacity(0.05))
+                    .cornerRadius(8)
+
                     // Summarization Provider Section
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
@@ -104,6 +161,7 @@ struct SettingsView: View {
                                         .padding(.leading, 28)
                                 }
                                 .padding(.vertical, 4)
+
                             }
                         }
 
@@ -124,7 +182,7 @@ struct SettingsView: View {
                                 Text("Version")
                                     .foregroundColor(.secondary)
                                 Spacer()
-                                Text("0.2.2-beta")
+                                Text("0.3.0-beta")
                                     .foregroundColor(.blue)
                             }
                             .font(.caption)

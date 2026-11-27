@@ -76,13 +76,30 @@ class FoundationModelsSummarizer: SummarizationProvider {
             let session = LanguageModelSession()
 
             // Craft a detailed prompt for summarization
+            // Check if transcript has speaker labels (format: [HH:MM:SS - Speaker N]:)
+            let hasSpeakerLabels = transcript.contains("[") && transcript.contains("Speaker")
+
+            let speakerInstructions = hasSpeakerLabels ? """
+
+            **IMPORTANT:** This transcript includes speaker labels in the format `[HH:MM:SS - Speaker N]: text`.
+            - Attribute key points, decisions, and action items to specific speakers
+            - Include a "Participants" section summarizing each speaker's main contributions
+            - Use speaker attribution in your summaries: "Speaker 1 proposed...", "Speaker 2 agreed that..."
+            """ : ""
+
+            let participantsSection = hasSpeakerLabels ? """
+
+            ## Participants
+            Briefly describe each speaker's main role/topics in the conversation.
+            """ : ""
+
             let prompt = """
-            Please analyze the following meeting or conversation transcript and create a structured summary in markdown format.
+            Please analyze the following transcript and create a structured summary in markdown format.\(speakerInstructions)
 
             Format your response as follows:
 
             ## Overview
-            A brief 1-2 sentence overview of what was discussed.
+            A brief 1-2 sentence overview of what was discussed.\(participantsSection)
 
             ## Key Points
             - Main topic 1 with brief description
@@ -95,11 +112,11 @@ class FoundationModelsSummarizer: SummarizationProvider {
             - (if applicable)
 
             ## Action Items
-            - Action item (if a specific person is clearly mentioned in the transcript as responsible, include their name, otherwise just describe the action)
+            - Action item (if a specific person is mentioned as responsible, include their name/speaker number)
             - (if applicable)
 
             Guidelines:
-            - If people are named in the conversation, reference them by name when relevant to key points, decisions, or actions
+            - If people or speakers are identified, reference them when relevant to key points, decisions, or actions
             - Be concise but comprehensive
             - Use bullet points and headings for clarity
             - Extract actionable items when mentioned
